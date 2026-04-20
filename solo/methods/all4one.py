@@ -39,6 +39,9 @@ class All4One(BaseMomentumMethod):
 
         self.temperature: float = cfg.method_kwargs.temperature
         self.queue_size: int = cfg.method_kwargs.queue_size
+        self.losses_names = ["att_nnclr_loss", "nnclr_loss", "on_diag_feat", "off_diag_feat"]
+        self.losses_weights = cfg.method_kwargs.losses_weights
+        assert set(self.losses_names) == set(self.losses_weights)
 
         proj_hidden_dim: int = cfg.method_kwargs.proj_hidden_dim
         proj_output_dim: int = cfg.method_kwargs.proj_output_dim
@@ -283,18 +286,7 @@ class All4One(BaseMomentumMethod):
         ) as f:
             pickle.dump(nn1_lb.cpu().numpy(), f)
 
-    def training_step(self, batch: Sequence[Any], batch_idx: int) -> torch.Tensor:
-        """Training step for All4One reusing BaseMomentumMethod training step.
-
-        Args:
-            batch (Sequence[Any]): a batch of data in the format of [img_indexes, [X], Y], where
-                [X] is a list of size num_crops containing batches of images.
-            batch_idx (int): index of the batch.
-
-        Returns:
-            torch.Tensor: total loss composed of All4One and classification loss.
-        """
-
+    def compute_losses(self, batch: Sequence[Any], batch_idx: int) -> Dict[torch.Tensor]:
         targets = batch[-1]
         img_indexes = batch[0]
 
@@ -364,11 +356,15 @@ class All4One(BaseMomentumMethod):
             + nnclr_loss_func(nn2[:, 0, :], p1, temperature=self.temperature) / 2
         )
 
-        feature_loss = (0.5 * on_diag_feat + 0.5 * off_diag_feat) * 10
-
         b = targets.size(0)
 
-        final_losss = 0.5 * att_nnclr_loss + 0.5 * nnclr_loss + 0.5 * feature_loss
+        losses = {
+            "att_nnclr_loss": att_nnclr_loss,
+            "nnclr_loss": nnclr_loss,
+            "on_diag_feat": on_diag_feat,
+            "off_diag_feat": off_diag_feat,
+            "class_loss": class_loss
+        }
 
         nn_acc = (targets == self.queue_y[idx1]).sum() / b
 
@@ -379,13 +375,30 @@ class All4One(BaseMomentumMethod):
         z_std = (z1_std + z2_std) / 2
 
         metrics = {
-            "train_comb_loss": final_losss,
             "train_nnclr_loss": nnclr_loss,
             "train_att_nnclr_loss": att_nnclr_loss,
-            "train_feature_loss": feature_loss,
+            "train_on_diag_feat_loss": on_diag_feat,
+            "train_off_diag_feat_loss": off_diag_feat,
             "train_nn_acc": nn_acc,
             "train_z_std": z_std,
         }
+        return losses, metrics
+
+    def training_step(self, batch: Sequence[Any], batch_idx: int) -> torch.Tensor:
+        """Training step for All4One reusing BaseMomentumMethod training step.
+
+        Args:
+            batch (Sequence[Any]): a batch of data in the format of [img_indexes, [X], Y], where
+                [X] is a list of size num_crops containing batches of images.
+            batch_idx (int): index of the batch.
+
+        Returns:
+            torch.Tensor: total loss composed of All4One and classification loss.
+        """
+        losses, metrics = self.compute_losses(batch, batch_idx)
+        final_losss = sum([self.losses_weights[name] * losses[name] for name in self.losses_names])
+
+        metrics["train_comb_loss"] = final_losss
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
         return final_losss + class_loss
