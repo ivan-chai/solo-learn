@@ -40,7 +40,7 @@ class All4One(BaseMomentumMethod):
         self.temperature: float = cfg.method_kwargs.temperature
         self.queue_size: int = cfg.method_kwargs.queue_size
         self.losses_names = ["att_nnclr_loss", "nnclr_loss", "on_diag_feat", "off_diag_feat"]
-        self.losses_weights = cfg.method_kwargs.losses_weights
+        self.losses_weights = cfg.method_kwargs.get("losses_weights", (0.5, 0.5, 2.5, 2.5))
         assert set(self.losses_names) == set(self.losses_weights)
 
         proj_hidden_dim: int = cfg.method_kwargs.proj_hidden_dim
@@ -295,6 +295,110 @@ class All4One(BaseMomentumMethod):
             "momentum_feats2": momentum_feats2,
         }
 
+    # --- intermediate representation builders ---
+
+    @torch.no_grad()
+    def _momentum_projections(
+        self, momentum_feats1: torch.Tensor, momentum_feats2: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        momentum_z1 = F.normalize(self.momentum_projector(momentum_feats1), dim=-1)
+        momentum_z2 = F.normalize(self.momentum_projector(momentum_feats2), dim=-1)
+        return momentum_z1, momentum_z2
+
+    def _online_projections(
+        self, feats1: torch.Tensor, feats2: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.projector(feats1), self.projector(feats2)
+
+    def _predictions(
+        self, z1: torch.Tensor, z2: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.predictor(z1), self.predictor(z2), self.predictor2(z1), self.predictor2(z2)
+
+    def _nearest_neighbors(
+        self, momentum_z1: torch.Tensor, momentum_z2: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        idx1, nn1, *_ = self.find_nn(momentum_z1)
+        _, nn2, _, _ = self.find_nn(momentum_z2)
+        return idx1, nn1, nn2
+
+    def _transformer_encodings(
+        self,
+        nn1: torch.Tensor,
+        nn2: torch.Tensor,
+        p1_2: torch.Tensor,
+        p2_2: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        rich_emb1 = self.transformer_encoder(self.pos_enc(nn1))[:, 0, :]
+        rich_emb2 = self.transformer_encoder(self.pos_enc(nn2))[:, 0, :]
+        strange_emb1 = self.transformer_encoder(
+            self.pos_enc(torch.cat((p1_2.unsqueeze(1), nn1), 1)[:, :5, :])
+        )[:, 0, :]
+        strange_emb2 = self.transformer_encoder(
+            self.pos_enc(torch.cat((p2_2.unsqueeze(1), nn2), 1)[:, :5, :])
+        )[:, 0, :]
+        return rich_emb1, rich_emb2, strange_emb1, strange_emb2
+
+    # --- individual losses ---
+
+    def _att_nnclr_loss(
+        self,
+        rich_emb1: torch.Tensor,
+        rich_emb2: torch.Tensor,
+        strange_emb1: torch.Tensor,
+        strange_emb2: torch.Tensor,
+    ) -> torch.Tensor:
+        return (
+            nnclr_loss_func(rich_emb1, strange_emb2) / 2
+            + nnclr_loss_func(rich_emb2, strange_emb1) / 2
+        )
+
+    def _nnclr_loss(
+        self,
+        nn1: torch.Tensor,
+        nn2: torch.Tensor,
+        p1: torch.Tensor,
+        p2: torch.Tensor,
+    ) -> torch.Tensor:
+        return (
+            nnclr_loss_func(nn1[:, 0, :], p2, temperature=self.temperature) / 2
+            + nnclr_loss_func(nn2[:, 0, :], p1, temperature=self.temperature) / 2
+        )
+
+    def _cross_corr_losses(
+        self,
+        z1: torch.Tensor,
+        z2: torch.Tensor,
+        momentum_z1: torch.Tensor,
+        momentum_z2: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        p1_n = F.normalize(momentum_z1, dim=0)
+        p2_n = F.normalize(momentum_z2, dim=0)
+        z1_n = F.normalize(z1, dim=0)
+        z2_n = F.normalize(z2, dim=0)
+
+        c1 = p1_n.T @ z2_n
+        c2 = p2_n.T @ z1_n
+
+        on_diag = (
+            (torch.diagonal(c1).add(-1).pow(2).mean() + torch.diagonal(c2).add(-1).pow(2).mean())
+            * 0.5
+        ).sqrt()
+        off_diag = (
+            (self.off_diagonal(c1).pow(2).mean() + self.off_diagonal(c2).pow(2).mean()) * 0.5
+        ).sqrt()
+        return on_diag, off_diag
+
+    def _class_loss(
+        self, feats1: torch.Tensor, feats2: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        return (
+            F.cross_entropy(self.classifier(feats1.detach()), targets, ignore_index=-1)
+            + F.cross_entropy(self.classifier(feats2.detach()), targets, ignore_index=-1)
+        ) / 2
+
+    # --- orchestrator ---
+
     def compute_losses(self, embs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         """Apply All4One modules and compute all losses from backbone embeddings.
 
@@ -306,80 +410,25 @@ class All4One(BaseMomentumMethod):
             on_diag_feat, off_diag_feat, z1, z2, idx1.
         """
         feats1, feats2 = embs["feats1"], embs["feats2"]
-        targets = embs["targets"]
 
-        with torch.no_grad():
-            momentum_z1 = F.normalize(self.momentum_projector(embs["momentum_feats1"]), dim=-1)
-            momentum_z2 = F.normalize(self.momentum_projector(embs["momentum_feats2"]), dim=-1)
-
-        z1 = self.projector(feats1)
-        z2 = self.projector(feats2)
-
-        p1 = self.predictor(z1)
-        p2 = self.predictor(z2)
-
-        p1_2 = self.predictor2(z1)
-        p2_2 = self.predictor2(z2)
-
-        idx1, nn1, *_ = self.find_nn(momentum_z1)
-        _, nn2, _, _ = self.find_nn(momentum_z2)
-
-        trans_emb1 = self.pos_enc(nn1)
-        trans_emb2 = self.pos_enc(nn2)
-
-        strange1 = self.pos_enc(torch.cat((p1_2.unsqueeze(1), nn1), 1)[:, :5, :])
-        strange2 = self.pos_enc(torch.cat((p2_2.unsqueeze(1), nn2), 1)[:, :5, :])
-
-        rich_emb1 = self.transformer_encoder(trans_emb1)[:, 0, :]
-        rich_emb2 = self.transformer_encoder(trans_emb2)[:, 0, :]
-
-        strange_emb1 = self.transformer_encoder(strange1)[:, 0, :]
-        strange_emb2 = self.transformer_encoder(strange2)[:, 0, :]
-
-        att_nnclr_loss = (
-            nnclr_loss_func(rich_emb1, strange_emb2) / 2
-            + nnclr_loss_func(rich_emb2, strange_emb1) / 2
+        momentum_z1, momentum_z2 = self._momentum_projections(
+            embs["momentum_feats1"], embs["momentum_feats2"]
+        )
+        z1, z2 = self._online_projections(feats1, feats2)
+        p1, p2, p1_2, p2_2 = self._predictions(z1, z2)
+        idx1, nn1, nn2 = self._nearest_neighbors(momentum_z1, momentum_z2)
+        rich_emb1, rich_emb2, strange_emb1, strange_emb2 = self._transformer_encodings(
+            nn1, nn2, p1_2, p2_2
         )
 
-        nnclr_loss = (
-            nnclr_loss_func(nn1[:, 0, :], p2, temperature=self.temperature) / 2
-            + nnclr_loss_func(nn2[:, 0, :], p1, temperature=self.temperature) / 2
-        )
+        on_diag_feat, off_diag_feat = self._cross_corr_losses(z1, z2, momentum_z1, momentum_z2)
 
-        p1_norm_feat = F.normalize(momentum_z1, dim=0)
-        p2_norm_feat = F.normalize(momentum_z2, dim=0)
-        z1_norm_feat = F.normalize(z1, dim=0)
-        z2_norm_feat = F.normalize(z2, dim=0)
-
-        corr_matrix_1_feat = p1_norm_feat.T @ z2_norm_feat
-        corr_matrix_2_feat = p2_norm_feat.T @ z1_norm_feat
-
-        on_diag_feat = (
-            (
-                torch.diagonal(corr_matrix_1_feat).add(-1).pow(2).mean()
-                + torch.diagonal(corr_matrix_2_feat).add(-1).pow(2).mean()
-            )
-            * 0.5
-        ).sqrt()
-        off_diag_feat = (
-            (
-                self.off_diagonal(corr_matrix_1_feat).pow(2).mean()
-                + self.off_diagonal(corr_matrix_2_feat).pow(2).mean()
-            )
-            * 0.5
-        ).sqrt()
-
-        class_loss = (
-            F.cross_entropy(self.classifier(feats1.detach()), targets, ignore_index=-1)
-            + F.cross_entropy(self.classifier(feats2.detach()), targets, ignore_index=-1)
-        ) / 2
-
-        self.dequeue_and_enqueue(momentum_z1, targets, embs["img_indexes"])
+        self.dequeue_and_enqueue(momentum_z1, embs["targets"], embs["img_indexes"])
 
         return {
-            "class_loss": class_loss,
-            "att_nnclr_loss": att_nnclr_loss,
-            "nnclr_loss": nnclr_loss,
+            "class_loss": self._class_loss(feats1, feats2, embs["targets"]),
+            "att_nnclr_loss": self._att_nnclr_loss(rich_emb1, rich_emb2, strange_emb1, strange_emb2),
+            "nnclr_loss": self._nnclr_loss(nn1, nn2, p1, p2),
             "on_diag_feat": on_diag_feat,
             "off_diag_feat": off_diag_feat,
             "z1": z1,

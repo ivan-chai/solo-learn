@@ -38,6 +38,7 @@ from solo.methods.vibcreg import VIbCReg
 from solo.methods.vicreg import VICReg
 from solo.methods.wmse import WMSE
 from solo.methods.all4one import All4One
+from solo.methods.hpo import HPOAll4One
 
 
 METHODS = {
@@ -64,6 +65,8 @@ METHODS = {
     "vicreg": VICReg,
     "wmse": WMSE,
     "all4one": All4One,
+    # HPO.
+    "hpo-all4one": HPOAll4One,
 }
 __all__ = [
     "BarlowTwins",
