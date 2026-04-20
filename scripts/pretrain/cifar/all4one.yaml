@@ -2,6 +2,7 @@ defaults:
   - _self_
   - augmentations: asymmetric.yaml
   - wandb: private.yaml
+  - logger
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
@@ -30,7 +31,7 @@ momentum:
   base_tau: 0.99
   final_tau: 1.0
 data:
-  dataset: cifar100 # change here for cifar10
+  dataset: cifar10 # change here for cifar10
   train_path: "./datasets/"
   val_path: "./datasets/"
   format: "image_folder" 

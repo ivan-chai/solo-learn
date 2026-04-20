@@ -34,7 +34,7 @@ class HPOAll4One(All4One):
         self.loss_weights = torch.nn.Parameter(initial_weights)
         assert not hpo_kwargs, set(hpo_kwargs)
 
-    def compress_embeddings(embeddings):
+    def compress_embeddings(self, embeddings):
         names = ["feats1", "feats2"]
         embeddings = dict(embeddings)
         compressed = torch.stack([embeddings.pop(name) for name in names], 0)  # (2, B, D).
@@ -43,7 +43,7 @@ class HPOAll4One(All4One):
         meta["batch_size"] = compressed.shape[1]
         return compressed.flatten(), meta
 
-    def decompress_embeddings(embeddings, meta):
+    def decompress_embeddings(self, embeddings, meta):
         names = ["feats1", "feats2"]
         meta = dict(meta)
         batch_size = meta.pop("batch_size")
@@ -175,3 +175,16 @@ class HPOAll4One(All4One):
         else:
             # Single GPU, CPU, or strategy that doesn't need no_sync
             yield
+
+    @torch.no_grad()
+    def _get_grad_norm(self, warn_empty_grads=True):
+        names, parameters = zip(*[pair for pair in self.named_parameters()
+                                  if pair[1].requires_grad])
+        norms = torch.zeros(len(parameters), device=parameters[0].device)
+        for i, (name, p) in enumerate(zip(names, parameters)):
+            if p.grad is None:
+                if warn_empty_grads:
+                    warnings.warn(f"No grad for {name}")
+                continue
+            norms[i] = p.grad.data.norm(2)
+        return norms.square().sum() ** 0.5
