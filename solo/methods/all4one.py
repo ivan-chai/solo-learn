@@ -288,6 +288,7 @@ class All4One(BaseMomentumMethod):
 
         return {
             "targets": batch[-1],
+            "img_indexes": batch[0],
             "feats1": feats1,
             "feats2": feats2,
             "momentum_feats1": momentum_feats1,
@@ -373,6 +374,8 @@ class All4One(BaseMomentumMethod):
             + F.cross_entropy(self.classifier(feats2.detach()), targets, ignore_index=-1)
         ) / 2
 
+        self.dequeue_and_enqueue(momentum_z1, targets, embs["img_indexes"])
+
         return {
             "class_loss": class_loss,
             "att_nnclr_loss": att_nnclr_loss,
@@ -382,7 +385,6 @@ class All4One(BaseMomentumMethod):
             "z1": z1,
             "z2": z2,
             "idx1": idx1,
-            "momentum_z1": momentum_z1,
         }
 
     def training_step(self, batch: Sequence[Any], batch_idx: int) -> torch.Tensor:
@@ -396,12 +398,10 @@ class All4One(BaseMomentumMethod):
         Returns:
             torch.Tensor: total loss composed of All4One and classification loss.
         """
-        targets, img_indexes = batch[-1], batch[0]
+        targets = batch[-1]
 
         embs = self.forward_embeddings(batch, batch_idx)
         losses = self.compute_losses(embs)
-
-        self.dequeue_and_enqueue(losses["momentum_z1"], targets, img_indexes)
 
         ssl_loss = sum(self.losses_weights[name] * losses[name] for name in self.losses_names)
 
