@@ -6,9 +6,10 @@ name: "HPO-All4One-cifar100" # change here for cifar10
 method: "hpo-all4one"
 hpo_kwargs:
   hp_group_params:
-    lr: 0.01
+    lr: 10
   hpo_params:
     algorithm: sgd
+    encoder_decoder: true
     regularization: 1
     ema:
       covs: 0.0

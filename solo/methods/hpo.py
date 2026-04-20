@@ -3,6 +3,7 @@ from typing import List
 
 import omegaconf
 import torch
+import torch.nn.functional as F
 from aligned_hpo import AlignedHPOptimizer, HPO_STAGE_DOWNSTREAM
 from solo.methods.all4one import All4One
 
@@ -164,6 +165,15 @@ class HPOAll4One(All4One):
         self._OPTIMIZERS["hpo"] = make_optimizer
         result = super().configure_optimizers()
         return result
+
+    def _class_loss(
+        self, feats1: torch.Tensor, feats2: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        # Don't detach.
+        return (
+            F.cross_entropy(self.classifier(feats1), targets, ignore_index=-1)
+            + F.cross_entropy(self.classifier(feats2), targets, ignore_index=-1)
+        ) / 2
 
     @contextmanager
     def _no_sync(self):
