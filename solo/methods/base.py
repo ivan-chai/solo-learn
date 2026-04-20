@@ -918,3 +918,19 @@ class BaseMomentumMethod(BaseMethod):
             self.log_dict(log, sync_dist=True)
 
         self.validation_step_outputs.clear()
+
+    def on_before_optimizer_step(self, optimizer=None, optimizer_idx=None):
+        self.log("grad_norm", self._get_grad_norm(), prog_bar=True)
+
+    @torch.no_grad()
+    def _get_grad_norm(self, warn_empty_grads=True):
+        names, parameters = zip(*[pair for pair in self.named_parameters()
+                                  if pair[1].requires_grad])
+        norms = torch.zeros(len(parameters), device=parameters[0].device)
+        for i, (name, p) in enumerate(zip(names, parameters)):
+            if p.grad is None:
+                if warn_empty_grads:
+                    warnings.warn(f"No grad for {name}")
+                continue
+            norms[i] = p.grad.data.norm(2)
+        return norms.square().sum() ** 0.5

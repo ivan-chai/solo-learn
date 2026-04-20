@@ -185,16 +185,3 @@ class HPOAll4One(All4One):
         else:
             # Single GPU, CPU, or strategy that doesn't need no_sync
             yield
-
-    @torch.no_grad()
-    def _get_grad_norm(self, warn_empty_grads=True):
-        names, parameters = zip(*[pair for pair in self.named_parameters()
-                                  if pair[1].requires_grad])
-        norms = torch.zeros(len(parameters), device=parameters[0].device)
-        for i, (name, p) in enumerate(zip(names, parameters)):
-            if p.grad is None:
-                if warn_empty_grads:
-                    warnings.warn(f"No grad for {name}")
-                continue
-            norms[i] = p.grad.data.norm(2)
-        return norms.square().sum() ** 0.5
