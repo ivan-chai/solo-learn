@@ -195,9 +195,11 @@ def main(cfg: DictConfig):
         )
         callbacks.append(auto_umap)
 
-    # wandb logging
-    if cfg.wandb.enabled:
-        wandb_logger = WandbLogger(
+    logger = None
+    if "logger" in cfg:
+        logger = hydra.utils.instantiate(cfg.logger)
+    elif cfg.wandb.enabled:
+        logger = WandbLogger(
             name=cfg.name,
             project=cfg.wandb.project,
             entity=cfg.wandb.entity,
@@ -205,8 +207,8 @@ def main(cfg: DictConfig):
             resume="allow" if wandb_run_id else None,
             id=wandb_run_id,
         )
-        wandb_logger.watch(model, log="gradients", log_freq=100)
-        wandb_logger.log_hyperparams(OmegaConf.to_container(cfg))
+    if logger is not None:
+        logger.log_hyperparams(OmegaConf.to_container(cfg))
 
         # lr logging
         lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -218,7 +220,7 @@ def main(cfg: DictConfig):
     trainer_kwargs = {name: trainer_kwargs[name] for name in valid_kwargs if name in trainer_kwargs}
     trainer_kwargs.update(
         {
-            "logger": wandb_logger if cfg.wandb.enabled else None,
+            "logger": logger,
             "callbacks": callbacks,
             "enable_checkpointing": False,
             "strategy": DDPStrategy(find_unused_parameters=False)
