@@ -222,20 +222,7 @@ class All4One(BaseMomentumMethod):
 
     @torch.no_grad()
     def momentum_forward(self, X: torch.Tensor) -> Dict:
-        """Performs the forward pass of the momentum backbone and projector.
-
-        Args:
-            X (torch.Tensor): batch of images in tensor format.
-
-        Returns:
-            Dict[str, Any]: a dict containing the outputs of
-                the parent and the momentum projected features.
-        """
-
-        out = super().momentum_forward(X)
-        z = F.normalize(self.momentum_projector(out["feats"]), dim=-1)
-        out.update({"z": z})
-        return out
+        return super().momentum_forward(X)
 
     def forward(self, X: torch.Tensor, *args, **kwargs) -> Dict[str, Any]:
         """Performs forward pass of the online backbone, projector and predictor.
@@ -290,18 +277,39 @@ class All4One(BaseMomentumMethod):
             pickle.dump(nn1_lb.cpu().numpy(), f)
 
     def forward_embeddings(self, batch: Sequence[Any], batch_idx: int) -> Dict[str, Any]:
-        """Apply backbone and all projection heads: batch → embeddings dict.
-
-        Runs the online backbone, momentum backbone, projectors, predictors,
-        NN retrieval, and transformer encoding.
+        """Apply backbone: batch → backbone embeddings dict.
 
         Returns:
-            Dict with keys: targets, feats1/2, momentum_z1/2, z1/2, p1/2,
-            nn1/2, idx1, rich_emb1/2, strange_emb1/2.
+            Dict with keys: targets, feats1/2, momentum_feats1/2.
         """
         out = super().training_step(batch, batch_idx)
         feats1, feats2 = out["feats"]
-        momentum_z1, momentum_z2 = out["momentum_z"]
+        momentum_feats1, momentum_feats2 = out["momentum_feats"]
+
+        return {
+            "targets": batch[-1],
+            "feats1": feats1,
+            "feats2": feats2,
+            "momentum_feats1": momentum_feats1,
+            "momentum_feats2": momentum_feats2,
+        }
+
+    def compute_losses(self, embs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """Apply All4One modules and compute all losses from backbone embeddings.
+
+        Args:
+            embs: output of forward_embeddings.
+
+        Returns:
+            Dict with keys: class_loss, att_nnclr_loss, nnclr_loss,
+            on_diag_feat, off_diag_feat, z1, z2, idx1.
+        """
+        feats1, feats2 = embs["feats1"], embs["feats2"]
+        targets = embs["targets"]
+
+        with torch.no_grad():
+            momentum_z1 = F.normalize(self.momentum_projector(embs["momentum_feats1"]), dim=-1)
+            momentum_z2 = F.normalize(self.momentum_projector(embs["momentum_feats2"]), dim=-1)
 
         z1 = self.projector(feats1)
         z2 = self.projector(feats2)
@@ -326,42 +334,6 @@ class All4One(BaseMomentumMethod):
 
         strange_emb1 = self.transformer_encoder(strange1)[:, 0, :]
         strange_emb2 = self.transformer_encoder(strange2)[:, 0, :]
-
-        return {
-            "targets": batch[-1],
-            "feats1": feats1,
-            "feats2": feats2,
-            "momentum_z1": momentum_z1,
-            "momentum_z2": momentum_z2,
-            "z1": z1,
-            "z2": z2,
-            "p1": p1,
-            "p2": p2,
-            "nn1": nn1,
-            "nn2": nn2,
-            "idx1": idx1,
-            "rich_emb1": rich_emb1,
-            "rich_emb2": rich_emb2,
-            "strange_emb1": strange_emb1,
-            "strange_emb2": strange_emb2,
-        }
-
-    def compute_losses(self, embs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        """Compute all losses from embeddings dict. No module calls or side-effects.
-
-        Args:
-            embs: output of forward_embeddings.
-
-        Returns:
-            Dict with keys: class_loss, att_nnclr_loss, nnclr_loss,
-            on_diag_feat, off_diag_feat.
-        """
-        z1, z2 = embs["z1"], embs["z2"]
-        p1, p2 = embs["p1"], embs["p2"]
-        nn1, nn2 = embs["nn1"], embs["nn2"]
-        momentum_z1, momentum_z2 = embs["momentum_z1"], embs["momentum_z2"]
-        rich_emb1, rich_emb2 = embs["rich_emb1"], embs["rich_emb2"]
-        strange_emb1, strange_emb2 = embs["strange_emb1"], embs["strange_emb2"]
 
         att_nnclr_loss = (
             nnclr_loss_func(rich_emb1, strange_emb2) / 2
@@ -397,8 +369,8 @@ class All4One(BaseMomentumMethod):
         ).sqrt()
 
         class_loss = (
-            F.cross_entropy(self.classifier(embs["feats1"].detach()), embs["targets"], ignore_index=-1)
-            + F.cross_entropy(self.classifier(embs["feats2"].detach()), embs["targets"], ignore_index=-1)
+            F.cross_entropy(self.classifier(feats1.detach()), targets, ignore_index=-1)
+            + F.cross_entropy(self.classifier(feats2.detach()), targets, ignore_index=-1)
         ) / 2
 
         return {
@@ -407,6 +379,10 @@ class All4One(BaseMomentumMethod):
             "nnclr_loss": nnclr_loss,
             "on_diag_feat": on_diag_feat,
             "off_diag_feat": off_diag_feat,
+            "z1": z1,
+            "z2": z2,
+            "idx1": idx1,
+            "momentum_z1": momentum_z1,
         }
 
     def training_step(self, batch: Sequence[Any], batch_idx: int) -> torch.Tensor:
@@ -425,14 +401,14 @@ class All4One(BaseMomentumMethod):
         embs = self.forward_embeddings(batch, batch_idx)
         losses = self.compute_losses(embs)
 
-        self.dequeue_and_enqueue(embs["momentum_z1"], targets, img_indexes)
+        self.dequeue_and_enqueue(losses["momentum_z1"], targets, img_indexes)
 
         ssl_loss = sum(self.losses_weights[name] * losses[name] for name in self.losses_names)
 
-        nn_acc = (targets == self.queue_y[embs["idx1"]]).sum() / targets.size(0)
+        nn_acc = (targets == self.queue_y[losses["idx1"]]).sum() / targets.size(0)
         z_std = (
-            F.normalize(embs["z1"], dim=-1).std(dim=0).mean()
-            + F.normalize(embs["z2"], dim=-1).std(dim=0).mean()
+            F.normalize(losses["z1"], dim=-1).std(dim=0).mean()
+            + F.normalize(losses["z2"], dim=-1).std(dim=0).mean()
         ) / 2
 
         self.log_dict(
