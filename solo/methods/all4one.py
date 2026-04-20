@@ -133,20 +133,23 @@ class All4One(BaseMomentumMethod):
         return cfg
 
     @property
-    def learnable_params(self) -> List[dict]:
-        """Adds projector and predictor parameters to the parent's learnable parameters.
-
-        Returns:
-            List[dict]: list of learnable parameters.
-        """
-
+    def extra_learnable_params(self) -> List[dict]:
         extra_learnable_params = [
             {"params": self.projector.parameters()},
             {"params": self.predictor.parameters()},
             {"params": self.predictor2.parameters()},
             {"params": self.transformer_encoder.parameters(), "lr": 0.1},
         ]
-        return super().learnable_params + extra_learnable_params
+        return extra_learnable_params
+
+    @property
+    def learnable_params(self) -> List[dict]:
+        """Adds projector and predictor parameters to the parent's learnable parameters.
+
+        Returns:
+            List[dict]: list of learnable parameters.
+        """
+        return super().learnable_params + self.extra_learnable_params
 
     @property
     def momentum_pairs(self) -> List[Tuple[Any, Any]]:
@@ -286,12 +289,17 @@ class All4One(BaseMomentumMethod):
         ) as f:
             pickle.dump(nn1_lb.cpu().numpy(), f)
 
-    def compute_losses(self, batch: Sequence[Any], batch_idx: int) -> Dict[torch.Tensor]:
-        targets = batch[-1]
-        img_indexes = batch[0]
+    def forward_embeddings(self, batch: Sequence[Any], batch_idx: int) -> Dict[str, Any]:
+        """Apply backbone and all projection heads: batch → embeddings dict.
 
+        Runs the online backbone, momentum backbone, projectors, predictors,
+        NN retrieval, and transformer encoding.
+
+        Returns:
+            Dict with keys: targets, feats1/2, momentum_z1/2, z1/2, p1/2,
+            nn1/2, idx1, rich_emb1/2, strange_emb1/2.
+        """
         out = super().training_step(batch, batch_idx)
-        class_loss = out["loss"]
         feats1, feats2 = out["feats"]
         momentum_z1, momentum_z2 = out["momentum_z"]
 
@@ -304,22 +312,71 @@ class All4One(BaseMomentumMethod):
         p1_2 = self.predictor2(z1)
         p2_2 = self.predictor2(z2)
 
-        # find nn
         idx1, nn1, *_ = self.find_nn(momentum_z1)
         _, nn2, _, _ = self.find_nn(momentum_z2)
 
         trans_emb1 = self.pos_enc(nn1)
         trans_emb2 = self.pos_enc(nn2)
 
-        # Shift Operation
         strange1 = self.pos_enc(torch.cat((p1_2.unsqueeze(1), nn1), 1)[:, :5, :])
         strange2 = self.pos_enc(torch.cat((p2_2.unsqueeze(1), nn2), 1)[:, :5, :])
 
-        # Feature dimension task
-        p1_norm_feat = torch.nn.functional.normalize(momentum_z1, dim=0)
-        p2_norm_feat = torch.nn.functional.normalize(momentum_z2, dim=0)
-        z1_norm_feat = torch.nn.functional.normalize(z1, dim=0)
-        z2_norm_feat = torch.nn.functional.normalize(z2, dim=0)
+        rich_emb1 = self.transformer_encoder(trans_emb1)[:, 0, :]
+        rich_emb2 = self.transformer_encoder(trans_emb2)[:, 0, :]
+
+        strange_emb1 = self.transformer_encoder(strange1)[:, 0, :]
+        strange_emb2 = self.transformer_encoder(strange2)[:, 0, :]
+
+        return {
+            "targets": batch[-1],
+            "feats1": feats1,
+            "feats2": feats2,
+            "momentum_z1": momentum_z1,
+            "momentum_z2": momentum_z2,
+            "z1": z1,
+            "z2": z2,
+            "p1": p1,
+            "p2": p2,
+            "nn1": nn1,
+            "nn2": nn2,
+            "idx1": idx1,
+            "rich_emb1": rich_emb1,
+            "rich_emb2": rich_emb2,
+            "strange_emb1": strange_emb1,
+            "strange_emb2": strange_emb2,
+        }
+
+    def compute_losses(self, embs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """Compute all losses from embeddings dict. No module calls or side-effects.
+
+        Args:
+            embs: output of forward_embeddings.
+
+        Returns:
+            Dict with keys: class_loss, att_nnclr_loss, nnclr_loss,
+            on_diag_feat, off_diag_feat.
+        """
+        z1, z2 = embs["z1"], embs["z2"]
+        p1, p2 = embs["p1"], embs["p2"]
+        nn1, nn2 = embs["nn1"], embs["nn2"]
+        momentum_z1, momentum_z2 = embs["momentum_z1"], embs["momentum_z2"]
+        rich_emb1, rich_emb2 = embs["rich_emb1"], embs["rich_emb2"]
+        strange_emb1, strange_emb2 = embs["strange_emb1"], embs["strange_emb2"]
+
+        att_nnclr_loss = (
+            nnclr_loss_func(rich_emb1, strange_emb2) / 2
+            + nnclr_loss_func(rich_emb2, strange_emb1) / 2
+        )
+
+        nnclr_loss = (
+            nnclr_loss_func(nn1[:, 0, :], p2, temperature=self.temperature) / 2
+            + nnclr_loss_func(nn2[:, 0, :], p1, temperature=self.temperature) / 2
+        )
+
+        p1_norm_feat = F.normalize(momentum_z1, dim=0)
+        p2_norm_feat = F.normalize(momentum_z2, dim=0)
+        z1_norm_feat = F.normalize(z1, dim=0)
+        z2_norm_feat = F.normalize(z2, dim=0)
 
         corr_matrix_1_feat = p1_norm_feat.T @ z2_norm_feat
         corr_matrix_2_feat = p2_norm_feat.T @ z1_norm_feat
@@ -339,50 +396,18 @@ class All4One(BaseMomentumMethod):
             * 0.5
         ).sqrt()
 
-        rich_emb1 = self.transformer_encoder(trans_emb1)[:, 0, :]
-        rich_emb2 = self.transformer_encoder(trans_emb2)[:, 0, :]
+        class_loss = (
+            F.cross_entropy(self.classifier(embs["feats1"].detach()), embs["targets"], ignore_index=-1)
+            + F.cross_entropy(self.classifier(embs["feats2"].detach()), embs["targets"], ignore_index=-1)
+        ) / 2
 
-        strange_emb1 = self.transformer_encoder(strange1)[:, 0, :]
-        strange_emb2 = self.transformer_encoder(strange2)[:, 0, :]
-
-        # ------- contrastive loss -------
-        att_nnclr_loss = (
-            nnclr_loss_func(rich_emb1, strange_emb2) / 2
-            + nnclr_loss_func(rich_emb2, strange_emb1) / 2
-        )
-
-        nnclr_loss = (
-            nnclr_loss_func(nn1[:, 0, :], p2, temperature=self.temperature) / 2
-            + nnclr_loss_func(nn2[:, 0, :], p1, temperature=self.temperature) / 2
-        )
-
-        b = targets.size(0)
-
-        losses = {
+        return {
+            "class_loss": class_loss,
             "att_nnclr_loss": att_nnclr_loss,
             "nnclr_loss": nnclr_loss,
             "on_diag_feat": on_diag_feat,
             "off_diag_feat": off_diag_feat,
-            "class_loss": class_loss
         }
-
-        nn_acc = (targets == self.queue_y[idx1]).sum() / b
-
-        self.dequeue_and_enqueue(momentum_z1, targets, img_indexes)
-
-        z1_std = F.normalize(z1, dim=-1).std(dim=0).mean()
-        z2_std = F.normalize(z2, dim=-1).std(dim=0).mean()
-        z_std = (z1_std + z2_std) / 2
-
-        metrics = {
-            "train_nnclr_loss": nnclr_loss,
-            "train_att_nnclr_loss": att_nnclr_loss,
-            "train_on_diag_feat_loss": on_diag_feat,
-            "train_off_diag_feat_loss": off_diag_feat,
-            "train_nn_acc": nn_acc,
-            "train_z_std": z_std,
-        }
-        return losses, metrics
 
     def training_step(self, batch: Sequence[Any], batch_idx: int) -> torch.Tensor:
         """Training step for All4One reusing BaseMomentumMethod training step.
@@ -395,10 +420,33 @@ class All4One(BaseMomentumMethod):
         Returns:
             torch.Tensor: total loss composed of All4One and classification loss.
         """
-        losses, metrics = self.compute_losses(batch, batch_idx)
-        final_losss = sum([self.losses_weights[name] * losses[name] for name in self.losses_names])
+        targets, img_indexes = batch[-1], batch[0]
 
-        metrics["train_comb_loss"] = final_losss
-        self.log_dict(metrics, on_epoch=True, sync_dist=True)
+        embs = self.forward_embeddings(batch, batch_idx)
+        losses = self.compute_losses(embs)
 
-        return final_losss + class_loss
+        self.dequeue_and_enqueue(embs["momentum_z1"], targets, img_indexes)
+
+        ssl_loss = sum(self.losses_weights[name] * losses[name] for name in self.losses_names)
+
+        nn_acc = (targets == self.queue_y[embs["idx1"]]).sum() / targets.size(0)
+        z_std = (
+            F.normalize(embs["z1"], dim=-1).std(dim=0).mean()
+            + F.normalize(embs["z2"], dim=-1).std(dim=0).mean()
+        ) / 2
+
+        self.log_dict(
+            {
+                "train_nnclr_loss": losses["nnclr_loss"],
+                "train_att_nnclr_loss": losses["att_nnclr_loss"],
+                "train_on_diag_feat_loss": losses["on_diag_feat"],
+                "train_off_diag_feat_loss": losses["off_diag_feat"],
+                "train_nn_acc": nn_acc,
+                "train_z_std": z_std,
+                "train_comb_loss": ssl_loss,
+            },
+            on_epoch=True,
+            sync_dist=True,
+        )
+
+        return ssl_loss + losses["class_loss"]
