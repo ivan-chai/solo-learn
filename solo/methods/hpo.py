@@ -33,13 +33,13 @@ class HPOAll4One(All4One):
         if initial_weights.shape != (len(self.hpo_losses),):
             raise ValueError(f"Initial weights shape mismatch: {initial_weights.shape} != ({len(self.hpo_losses)})")
         self.loss_weights = torch.nn.Parameter(initial_weights)
-        assert not hpo_kwargs, set(hpo_kwargs)
 
         if self.hpo_params.get("train_downstream_head", "train") != "train":
             self.downstream_loss = "tune_class_loss"
             self.val_classifier = nn.Linear(self.features_dim, self.num_classes)
         else:
             self.downstream_loss = "class_loss"
+        assert not hpo_kwargs, set(hpo_kwargs)
 
     def compress_embeddings(self, embeddings):
         names = ["feats1", "feats2"]
