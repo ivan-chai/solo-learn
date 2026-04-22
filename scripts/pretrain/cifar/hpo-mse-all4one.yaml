@@ -1,0 +1,10 @@
+defaults:
+  - hpo-all4one
+  - _self_
+
+name: "HPO-MSE-All4One-cifar10"
+hpo_kwargs:
+  hpo_params:
+    algorithm: mse
+    ema:
+      covs: 0.99

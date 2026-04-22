@@ -2,7 +2,7 @@ defaults:
   - all4one
   - _self_
 
-name: "HPO-All4One-cifar100" # change here for cifar10
+name: "HPO-All4One-cifar10"
 method: "hpo-all4one"
 hpo_kwargs:
   hp_group_params:

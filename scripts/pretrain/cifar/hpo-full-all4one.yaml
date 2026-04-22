@@ -1,0 +1,8 @@
+defaults:
+  - hpo-all4one
+  - _self_
+
+name: "HPO-full-All4One-cifar10"
+hpo_kwargs:
+  hpo_params:
+    encoder_decoder: false

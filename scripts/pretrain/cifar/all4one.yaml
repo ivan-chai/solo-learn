@@ -11,7 +11,7 @@ hydra:
   run:
     dir: .
 
-name: "All4One-cifar100" # change here for cifar10
+name: "All4One-cifar10"
 method: "all4one"
 backbone:
   name: "resnet18"
