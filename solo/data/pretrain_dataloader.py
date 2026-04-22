@@ -373,6 +373,59 @@ def prepare_datasets(
     return train_dataset
 
 
+class InterleavedLoader:
+    """Interleave val batches into the training loop.
+
+    Every `val_period` steps a val batch is yielded instead of a train batch.
+    The val loader cycles (restarts) when exhausted. StopIteration propagates
+    from the train loader, ending the epoch.
+
+    Each item yielded is ``(batch, dataloader_idx)`` where ``dataloader_idx``
+    is 0 for train and 1 for val.
+    """
+
+    def __init__(self, train_loader: DataLoader, val_loader: DataLoader, val_period: int = 2):
+        if val_period < 2:
+            raise ValueError("val_period must be >= 2")
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.val_period = val_period
+
+    def __iter__(self) -> "InterleavedLoader":
+        self._train_iter = iter(self.train_loader)
+        self._val_iter = iter(self.val_loader)
+        self._idx = 0
+        return self
+
+    def __next__(self):
+        if self._idx % self.val_period == 0:
+            try:
+                val_batch = next(self._val_iter)
+            except StopIteration:
+                self._val_iter = iter(self.val_loader)
+                val_batch = next(self._val_iter)
+            batch, dataloader_idx = val_batch, 1
+        else:
+            batch, dataloader_idx = next(self._train_iter), 0  # propagates StopIteration
+        self._idx += 1
+        return batch, dataloader_idx
+
+    def __len__(self) -> int:
+        n_train = len(self.train_loader)
+        # One val precedes each group of (val_period - 1) trains; correct for the
+        # leading val that appears even before a full group is consumed.
+        n_val = 1 + n_train // (self.val_period - 1)
+        return n_train + n_val
+
+    @property
+    def dataset(self):
+        return self.train_loader.dataset
+
+    @property
+    def sampler(self):
+        return self.train_loader.sampler
+
+
 def prepare_dataloader(
     train_dataset: Dataset, batch_size: int = 64, num_workers: int = 4
 ) -> DataLoader:

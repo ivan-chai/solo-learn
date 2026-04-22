@@ -54,6 +54,12 @@ class HPOAll4One(All4One):
         return embeddings
 
     def training_step(self, batch, batch_idx):
+        # Unpack (batch, dataloader_idx) when InterleavedLoader is active.
+        if isinstance(batch, (tuple, list)) and len(batch) == 2 and isinstance(batch[1], int):
+            batch, dataloader_idx = batch
+        else:
+            dataloader_idx = 0
+
         opt = self.optimizers()
         if opt.use_validation:
             raise NotImplementedError("Val set is not supported")

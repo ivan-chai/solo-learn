@@ -31,6 +31,7 @@ from solo.args.pretrain import parse_cfg
 from solo.data.classification_dataloader import prepare_data as prepare_data_classification
 from solo.data.pretrain_dataloader import (
     FullTransformPipeline,
+    InterleavedLoader,
     NCropAugmentation,
     build_transform_pipeline,
     prepare_dataloader,
@@ -153,6 +154,11 @@ def main(cfg: DictConfig):
         train_loader = prepare_dataloader(
             train_dataset, batch_size=cfg.optimizer.batch_size, num_workers=cfg.data.num_workers
         )
+
+        val_interleaved = omegaconf_select(cfg, "data.val_interleaved", 0)
+        if val_interleaved:
+            assert val_loader is not None, "val_interleaved requires a val_path"
+            train_loader = InterleavedLoader(train_loader, val_loader, val_period=val_interleaved)
 
     # 1.7 will deprecate resume_from_checkpoint, but for the moment
     # the argument is the same, but we need to pass it as ckpt_path to trainer.fit
