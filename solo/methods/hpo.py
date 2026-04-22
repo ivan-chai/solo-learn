@@ -3,6 +3,7 @@ from typing import List
 
 import omegaconf
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from aligned_hpo import AlignedHPOptimizer, HPO_STAGE_DOWNSTREAM
 from solo.methods.all4one import All4One
@@ -17,7 +18,6 @@ class HPOAll4One(All4One):
 
         self.automatic_optimization = False
         self.hpo_losses = list(sorted(self.losses_names))
-        self.downstream_loss = "class_loss"
 
         hpo_kwargs = dict(cfg.hpo_kwargs)
         self.hpo_params = hpo_kwargs.pop("hpo_params", None)
@@ -34,6 +34,12 @@ class HPOAll4One(All4One):
             raise ValueError(f"Initial weights shape mismatch: {initial_weights.shape} != ({len(self.hpo_losses)})")
         self.loss_weights = torch.nn.Parameter(initial_weights)
         assert not hpo_kwargs, set(hpo_kwargs)
+
+        if self.hpo_params.get("train_downstream_head", "train") == "val":
+            self.downstream_loss = "tune_class_loss"
+            self.val_classifier = nn.Linear(self.features_dim, self.num_classes)
+        else:
+            self.downstream_loss = "class_loss"
 
     def compress_embeddings(self, embeddings):
         names = ["feats1", "feats2"]
@@ -79,8 +85,14 @@ class HPOAll4One(All4One):
         if use_cached_grads:
             raise NotImplementedError("Can't cache gradients.")
 
-        losses = self.compute_losses(self.decompress_embeddings(embeddings, meta))
+        decompressed_embeddings = self.decompress_embeddings(embeddings, meta)
+        losses = self.compute_losses(decompressed_embeddings)
         metrics = {}
+        if opt.train_downstream_head == "val":
+            losses[self.downstream_loss] = self._class_loss(
+                decompressed_embeddings["feats1"], decompressed_embeddings["feats2"], decompressed_embeddings["targets"], use_val_head=True,
+            )
+            metrics[self.downstream_loss] = losses[self.downstream_loss].detach()
 
         def closure(down, weights, retain_graph=False, stage=None):
             opt.zero_grad()
@@ -161,6 +173,8 @@ class HPOAll4One(All4One):
         assert base_heads_params
 
         heads_params = base_heads_params + extra_learnable_params
+        if self.downstream_loss == "tune_class_loss":
+            heads_params.append({"params": self.val_classifier.parameters(), "lr": self.classifier_lr})
         for group in heads_params:
             group["is_head"] = True
         return weights_params + heads_params + backbone_params
@@ -179,12 +193,14 @@ class HPOAll4One(All4One):
         return result
 
     def _class_loss(
-        self, feats1: torch.Tensor, feats2: torch.Tensor, targets: torch.Tensor
+        self, feats1: torch.Tensor, feats2: torch.Tensor, targets: torch.Tensor,
+        use_val_head: bool = False,
     ) -> torch.Tensor:
         # Don't detach.
+        head = self.val_classifier if use_val_head else self.classifier
         return (
-            F.cross_entropy(self.classifier(feats1), targets, ignore_index=-1)
-            + F.cross_entropy(self.classifier(feats2), targets, ignore_index=-1)
+            F.cross_entropy(head(feats1), targets, ignore_index=-1)
+            + F.cross_entropy(head(feats2), targets, ignore_index=-1)
         ) / 2
 
     @contextmanager
