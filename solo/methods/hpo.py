@@ -58,11 +58,13 @@ class HPOAll4One(All4One):
         if isinstance(batch, (tuple, list)) and len(batch) == 2 and isinstance(batch[1], int):
             batch, dataloader_idx = batch
         else:
-            dataloader_idx = 0
+            dataloader_idx = None
 
         opt = self.optimizers()
-        if opt.use_validation:
-            raise NotImplementedError("Val set is not supported")
+        if opt.use_validation and ((dataloader_idx is None) or (dataloader_idx > 1)):
+            raise ValueError(f"When validation set is used for tuning, there must be exact 2 dataloaders. Got {dataloader_idx}")
+
+        do_val_step = opt.use_validation and dataloader_idx == 1
 
         embeddings = self.forward_embeddings(batch, batch_idx)
         embeddings, meta = self.compress_embeddings(embeddings)
@@ -125,19 +127,23 @@ class HPOAll4One(All4One):
                     self.manual_backward(zero_loss)
             if self.gradient_clip_val is not None:
                 self.clip_gradients(opt, gradient_clip_val=self.gradient_clip_val, gradient_clip_algorithm=self.trainer.gradient_clip_algorithm)
-            self.log("grad_norm", self._get_grad_norm(), prog_bar=True)
+            if not do_val_step:
+                self.log("grad_norm", self._get_grad_norm(), prog_bar=True)
 
-        opt.hpo_step(closure, closure_encoder, embed_fn=embed_fn, after_backward_hook=after_backward_hook)
-        hpo_grads = self.loss_weights.grad
-        if hpo_grads is not None:
-            hpo_grad_norm = torch.linalg.norm(hpo_grads)
-            metrics["hpo_grad_norm"] = hpo_grad_norm
-        metrics.update(opt.metrics)
-        self.log_dict(metrics, on_epoch=True, sync_dist=True)
+        if do_val_step:
+            opt.val_step(closure, closure_encoder, embed_fn=embed_fn, after_backward_hook=after_backward_hook)
+        else:
+            opt.hpo_step(closure, closure_encoder, embed_fn=embed_fn, after_backward_hook=after_backward_hook)
+            hpo_grads = self.loss_weights.grad
+            if hpo_grads is not None:
+                hpo_grad_norm = torch.linalg.norm(hpo_grads)
+                metrics["hpo_grad_norm"] = hpo_grad_norm
+            metrics.update(opt.metrics)
+            self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
-        sch = self.lr_schedulers()
-        if sch is not None and self.scheduler_interval == "step":
-            sch.step()
+            sch = self.lr_schedulers()
+            if sch is not None and self.scheduler_interval == "step":
+                sch.step()
 
     @property
     def learnable_params(self) -> List[dict]:

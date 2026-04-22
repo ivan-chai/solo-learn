@@ -158,7 +158,22 @@ def main(cfg: DictConfig):
         val_interleaved = omegaconf_select(cfg, "data.val_interleaved", 0)
         if val_interleaved:
             assert val_loader is not None, "val_interleaved requires a val_path"
-            train_loader = InterleavedLoader(train_loader, val_loader, val_period=val_interleaved)
+            val_pretrain_dataset = prepare_datasets(
+                cfg.data.dataset,
+                transform,
+                train_data_path=cfg.data.train_path,
+                val_data_path=cfg.data.val_path,
+                data_format=cfg.data.format,
+                no_labels=cfg.data.no_labels,
+                data_fraction=cfg.data.fraction,
+                split="val",
+            )
+            val_pretrain_loader = prepare_dataloader(
+                val_pretrain_dataset,
+                batch_size=cfg.optimizer.batch_size,
+                num_workers=cfg.data.num_workers,
+            )
+            train_loader = InterleavedLoader(train_loader, val_pretrain_loader, val_period=val_interleaved)
 
     # 1.7 will deprecate resume_from_checkpoint, but for the moment
     # the argument is the same, but we need to pass it as ckpt_path to trainer.fit

@@ -294,22 +294,29 @@ def prepare_datasets(
     dataset: str,
     transform: Callable,
     train_data_path: Optional[Union[str, Path]] = None,
+    val_data_path: Optional[Union[str, Path]] = None,
     data_format: Optional[str] = "image_folder",
     no_labels: Optional[Union[str, Path]] = False,
     download: bool = True,
     data_fraction: float = -1.0,
+    split: str = "train",
 ) -> Dataset:
     """Prepares the desired dataset.
 
     Args:
         dataset (str): the name of the dataset.
         transform (Callable): a transformation.
-        train_dir (Optional[Union[str, Path]]): training data path. Defaults to None.
+        train_data_path (Optional[Union[str, Path]]): training data path. Defaults to None.
+        val_data_path (Optional[Union[str, Path]]): validation data path. Defaults to None.
+            Required when split="val" for path-based datasets (imagenet, imagenet100, custom).
         data_format (Optional[str]): format of the data. Defaults to "image_folder".
             Possible values are "image_folder" and "h5".
         no_labels (Optional[bool]): if the custom dataset has no labels.
         data_fraction (Optional[float]): percentage of data to use. Use all data when set to -1.0.
             Defaults to -1.0.
+        split (str): which split to load, "train" or "val". The transform is applied regardless,
+            so passing train augmentations with split="val" gives val images with SSL transforms
+            (useful for the interleaved loader). Defaults to "train".
     Returns:
         Dataset: the desired dataset with transformations.
     """
@@ -322,33 +329,36 @@ def prepare_datasets(
         DatasetClass = vars(torchvision.datasets)[dataset.upper()]
         train_dataset = dataset_with_index(DatasetClass)(
             train_data_path,
-            train=True,
+            train=(split == "train"),
             download=download,
             transform=transform,
         )
 
     elif dataset == "stl10":
+        stl_split = "train+unlabeled" if split == "train" else "test"
         train_dataset = dataset_with_index(STL10)(
             train_data_path,
-            split="train+unlabeled",
+            split=stl_split,
             download=download,
             transform=transform,
         )
 
     elif dataset in ["imagenet", "imagenet100"]:
+        data_path = train_data_path if split == "train" else val_data_path
         if data_format == "h5":
             assert _h5_available
-            train_dataset = dataset_with_index(H5Dataset)(dataset, train_data_path, transform)
+            train_dataset = dataset_with_index(H5Dataset)(dataset, data_path, transform)
         else:
-            train_dataset = dataset_with_index(ImageFolder)(train_data_path, transform)
+            train_dataset = dataset_with_index(ImageFolder)(data_path, transform)
 
     elif dataset == "custom":
+        data_path = train_data_path if split == "train" else val_data_path
         if no_labels:
             dataset_class = CustomDatasetWithoutLabels
         else:
             dataset_class = ImageFolder
 
-        train_dataset = dataset_with_index(dataset_class)(train_data_path, transform)
+        train_dataset = dataset_with_index(dataset_class)(data_path, transform)
 
     if data_fraction > 0:
         assert data_fraction < 1, "Only use data_fraction for values smaller than 1."

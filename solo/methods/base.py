@@ -18,6 +18,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import logging
+import warnings
 from functools import partial
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Union
 

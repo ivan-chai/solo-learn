@@ -1,0 +1,10 @@
+defaults:
+  - hpo-all4one
+  - _self_
+
+name: "HPO-val-All4One-cifar10"
+data:
+  val_interleaved: 2
+hpo_kwargs:
+  hpo_params:
+    align: val
