@@ -24,8 +24,7 @@ method_kwargs:
   losses_weights:
     att_nnclr_loss: 0.5
     nnclr_loss: 0.5
-    on_diag_feat: 2.5
-    off_diag_feat: 2.5
+    feature_loss: 5
 momentum:
   base_tau: 0.99
   final_tau: 1.0
@@ -33,7 +32,7 @@ data:
   dataset: cifar10 # change here for cifar10
   train_path: "./datasets/"
   val_path: "./datasets/"
-  format: "image_folder" 
+  format: "image_folder"
   num_workers: 4
 optimizer:
   name: "lars"
