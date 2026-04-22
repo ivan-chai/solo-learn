@@ -132,6 +132,17 @@ class HPOAll4One(All4One):
             embed_fn = None
 
         def after_backward_hook():
+            if not do_val_step and self.downstream_loss == "tune_class_loss":
+                # Backward through the train head with detached features so only
+                # self.classifier gets updated (backbone grads come from HPO path).
+                with self._no_sync(), \
+                     torch.enable_grad():
+                    train_class_loss = self._class_loss(
+                        decompressed_embeddings["feats1"].detach(),
+                        decompressed_embeddings["feats2"].detach(),
+                        decompressed_embeddings["targets"],
+                    )
+                    self.manual_backward(train_class_loss)
             # Synchronize gradients in DDP (mirrors _no_sync logic).
             if hasattr(self.trainer.model, "no_sync"):
                 with torch.enable_grad():
@@ -174,7 +185,7 @@ class HPOAll4One(All4One):
 
         heads_params = base_heads_params + extra_learnable_params
         if self.downstream_loss == "tune_class_loss":
-            heads_params.append({"params": self.val_classifier.parameters(), "lr": self.classifier_lr})
+            heads_params.append({"params": self.val_classifier.parameters(), "lr": self.classifier_lr, "weight_decay": 0})
         for group in heads_params:
             group["is_head"] = True
         return weights_params + heads_params + backbone_params
