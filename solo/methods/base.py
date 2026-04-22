@@ -540,6 +540,9 @@ class BaseMethod(pl.LightningModule):
 
         return outs
 
+    def on_before_optimizer_step(self, optimizer=None, optimizer_idx=None):
+        self.log("grad_norm", self._get_grad_norm(), prog_bar=True)
+
     def base_validation_step(self, X: torch.Tensor, targets: torch.Tensor) -> Dict:
         """Allows user to re-write how the forward step behaves for the validation_step.
         Should always return a dict containing, at least, "loss", "acc1" and "acc5".
@@ -918,9 +921,6 @@ class BaseMomentumMethod(BaseMethod):
             self.log_dict(log, sync_dist=True)
 
         self.validation_step_outputs.clear()
-
-    def on_before_optimizer_step(self, optimizer=None, optimizer_idx=None):
-        self.log("grad_norm", self._get_grad_norm(), prog_bar=True)
 
     @torch.no_grad()
     def _get_grad_norm(self, warn_empty_grads=True):
