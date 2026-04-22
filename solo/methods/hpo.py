@@ -35,7 +35,7 @@ class HPOAll4One(All4One):
         self.loss_weights = torch.nn.Parameter(initial_weights)
         assert not hpo_kwargs, set(hpo_kwargs)
 
-        if self.hpo_params.get("train_downstream_head", "train") == "val":
+        if self.hpo_params.get("train_downstream_head", "train") != "train":
             self.downstream_loss = "tune_class_loss"
             self.val_classifier = nn.Linear(self.features_dim, self.num_classes)
         else:
@@ -88,7 +88,7 @@ class HPOAll4One(All4One):
         decompressed_embeddings = self.decompress_embeddings(embeddings, meta)
         losses = self.compute_losses(decompressed_embeddings)
         metrics = {}
-        if opt.train_downstream_head == "val":
+        if opt.train_downstream_head != "train":
             losses[self.downstream_loss] = self._class_loss(
                 decompressed_embeddings["feats1"], decompressed_embeddings["feats2"], decompressed_embeddings["targets"], use_val_head=True,
             )
