@@ -39,8 +39,8 @@ class All4One(BaseMomentumMethod):
 
         self.temperature: float = cfg.method_kwargs.temperature
         self.queue_size: int = cfg.method_kwargs.queue_size
-        self.losses_names = ["att_nnclr_loss", "nnclr_loss", "feature_loss"]
-        self.losses_weights = cfg.method_kwargs.get("losses_weights", {"att_nnclr_loss": 0.5, "nnclr_loss": 0.5, "feature_loss": 5})
+        self.losses_names = ["att_nnclr_loss", "nnclr_loss", "on_diag_feat", "off_diag_feat"]
+        self.losses_weights = cfg.method_kwargs.get("losses_weights", {"att_nnclr_loss": 0.5, "nnclr_loss": 0.5, "on_diag_feat": 2.5, "off_diag_feat": 2.5})
         assert set(self.losses_names) == set(self.losses_weights)
 
         proj_hidden_dim: int = cfg.method_kwargs.proj_hidden_dim
@@ -371,7 +371,7 @@ class All4One(BaseMomentumMethod):
         z2: torch.Tensor,
         momentum_z1: torch.Tensor,
         momentum_z2: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         p1_n = F.normalize(momentum_z1, dim=0)
         p2_n = F.normalize(momentum_z2, dim=0)
         z1_n = F.normalize(z1, dim=0)
@@ -387,7 +387,7 @@ class All4One(BaseMomentumMethod):
         off_diag = (
             (self.off_diagonal(c1).pow(2).mean() + self.off_diagonal(c2).pow(2).mean()) * 0.5
         ).sqrt()
-        return 0.5 * (on_diag + off_diag)
+        return on_diag, off_diag
 
     def _class_loss(
         self, feats1: torch.Tensor, feats2: torch.Tensor, targets: torch.Tensor
@@ -407,7 +407,7 @@ class All4One(BaseMomentumMethod):
 
         Returns:
             Dict with keys: class_loss, att_nnclr_loss, nnclr_loss,
-            feature_loss, z1, z2, idx1.
+            on_diag_feat, off_diag_feat, z1, z2, idx1.
         """
         feats1, feats2 = embs["feats1"], embs["feats2"]
 
@@ -421,7 +421,7 @@ class All4One(BaseMomentumMethod):
             nn1, nn2, p1_2, p2_2
         )
 
-        feature_loss = self._feature_loss(z1, z2, momentum_z1, momentum_z2)
+        on_diag_feat, off_diag_feat = self._feature_loss(z1, z2, momentum_z1, momentum_z2)
 
         self.dequeue_and_enqueue(momentum_z1, embs["targets"], embs["img_indexes"])
 
@@ -429,7 +429,8 @@ class All4One(BaseMomentumMethod):
             "class_loss": self._class_loss(feats1, feats2, embs["targets"]),
             "att_nnclr_loss": self._att_nnclr_loss(rich_emb1, rich_emb2, strange_emb1, strange_emb2),
             "nnclr_loss": self._nnclr_loss(nn1, nn2, p1, p2),
-            "feature_loss": feature_loss,
+            "on_diag_feat": on_diag_feat,
+            "off_diag_feat": off_diag_feat,
             "z1": z1,
             "z2": z2,
             "idx1": idx1,
@@ -463,7 +464,8 @@ class All4One(BaseMomentumMethod):
             {
                 "train_nnclr_loss": losses["nnclr_loss"],
                 "train_att_nnclr_loss": losses["att_nnclr_loss"],
-                "train_feature_loss": losses["feature_loss"],
+                "train_on_diag_feat": losses["on_diag_feat"],
+                "train_off_diag_feat": losses["off_diag_feat"],
                 "train_nn_acc": nn_acc,
                 "train_z_std": z_std,
                 "train_comb_loss": ssl_loss,
