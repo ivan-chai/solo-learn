@@ -24,7 +24,8 @@ method_kwargs:
   losses_weights:
     att_nnclr_loss: 0.5
     nnclr_loss: 0.5
-    feature_loss: 5
+    on_diag_feat: 2.5
+    off_diag_feat: 2.5
 momentum:
   base_tau: 0.99
   final_tau: 1.0
