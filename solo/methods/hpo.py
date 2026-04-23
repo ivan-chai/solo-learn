@@ -1,3 +1,6 @@
+import os
+import yaml
+import warnings
 from contextlib import contextmanager
 from typing import List
 
@@ -7,6 +10,51 @@ import torch.nn as nn
 import torch.nn.functional as F
 from aligned_hpo import AlignedHPOptimizer, HPO_STAGE_DOWNSTREAM
 from solo.methods.all4one import All4One
+
+
+def recursive_map(data, func):
+    """Recursively applies a function to all leaf nodes in a structure."""
+    if isinstance(data, dict):
+        return {k: recursive_map(v, func) for k, v in data.items()}
+    elif isinstance(data, (list, tuple, set)):
+        return type(data)(recursive_map(item, func) for item in data)
+    return func(data)
+
+
+def log_dict(logger, data, epoch, prefix):
+    is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized() and (torch.distributed.get_world_size() > 1)
+    if is_distributed and (torch.distributed.get_rank() != 0):
+        return
+    logger_name = type(logger).__name__
+    try:
+        if logger_name == "MlflowClient":
+            logger.log_dict(logger.run_id, data, f"{prefix}{epoch}.yaml")
+            logger.log_dict(logger.run_id, data, f"{prefix}last.yaml")
+        elif logger_name == "SummaryWriter":
+            # TensorBoard: log YAML content as text.
+            text = yaml.dump(data)
+            logger.add_text(prefix.rstrip("/"), f"```yaml\n{text}\n```", global_step=epoch)
+        elif logger_name == "Run":
+            # WandB: write YAML files to the run directory.
+            run_dir = getattr(logger, "dir", None)
+            if run_dir is not None:
+                artifact_dir = os.path.join(run_dir, prefix.rstrip("/"))
+                os.makedirs(artifact_dir, exist_ok=True)
+                for filename in [f"{epoch}.yaml", "last.yaml"]:
+                    with open(os.path.join(artifact_dir, filename), "w") as f:
+                        yaml.dump(data, f)
+                logger.save(os.path.join(artifact_dir, "*.yaml"), policy="now")
+        elif logger_name == "ExperimentWriter":
+            # CSV logger: write YAML files alongside CSV logs.
+            artifact_dir = os.path.join(logger.log_dir, prefix.rstrip("/"))
+            os.makedirs(artifact_dir, exist_ok=True)
+            for filename in [f"{epoch}.yaml", "last.yaml"]:
+                with open(os.path.join(artifact_dir, filename), "w") as f:
+                    yaml.dump(data, f)
+        else:
+            warnings.warn(f"log_dict: unsupported logger type '{logger_name}', skipping.")
+    except Exception as e:
+        warnings.warn(f"log_dict: failed to log with {logger_name}: {e}")
 
 
 class HPOAll4One(All4One):
@@ -174,6 +222,17 @@ class HPOAll4One(All4One):
             sch = self.lr_schedulers()
             if sch is not None and self.scheduler_interval == "step":
                 sch.step()
+
+    def on_train_epoch_end(self):
+        super().on_train_epoch_end()
+        # Make scheduler step if necessary.
+        sch = self.lr_schedulers()
+        if sch is not None and self.scheduler_interval == "epoch":
+            sch.step()
+        # Log the detailed optimizer state.
+        state = self.optimizers().hpo_state_dict(add_names=True)
+        state = recursive_map(state, lambda x: (x.detach().cpu().tolist() if isinstance(x, torch.Tensor) else x))
+        log_dict(self.logger.experiment, state, self.current_epoch, "hpo_state/")
 
     @property
     def learnable_params(self) -> List[dict]:
