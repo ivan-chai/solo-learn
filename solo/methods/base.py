@@ -543,6 +543,7 @@ class BaseMethod(pl.LightningModule):
 
     def on_before_optimizer_step(self, optimizer=None, optimizer_idx=None):
         self.log("grad_norm", self._get_grad_norm(), prog_bar=True)
+        self.log("backbone_grad_norm", self._get_grad_norm(self.backbone), prog_bar=True)
 
     def base_validation_step(self, X: torch.Tensor, targets: torch.Tensor) -> Dict:
         """Allows user to re-write how the forward step behaves for the validation_step.
@@ -924,8 +925,10 @@ class BaseMomentumMethod(BaseMethod):
         self.validation_step_outputs.clear()
 
     @torch.no_grad()
-    def _get_grad_norm(self, warn_empty_grads=True):
-        names, parameters = zip(*[pair for pair in self.named_parameters()
+    def _get_grad_norm(self, module=None, warn_empty_grads=True):
+        if module is None:
+            module = self
+        names, parameters = zip(*[pair for pair in module.named_parameters()
                                   if pair[1].requires_grad])
         norms = torch.zeros(len(parameters), device=parameters[0].device)
         for i, (name, p) in enumerate(zip(names, parameters)):
