@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - augmentations: asymmetric.yaml
-  - wandb: private.yaml
+  - logger
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 
@@ -21,6 +21,9 @@ method_kwargs:
   pred_hidden_dim: 4096
   proj_output_dim: 256
   queue_size: 98340
+momentum:
+  base_tau: 0.99
+  final_tau: 1.0
 data:
   dataset: imagenet100
   train_path: "./datasets/imagenet-100/train"
