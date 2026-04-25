@@ -39,8 +39,13 @@ class All4One(BaseMomentumMethod):
 
         self.temperature: float = cfg.method_kwargs.temperature
         self.queue_size: int = cfg.method_kwargs.queue_size
-        self.losses_names = ["att_nnclr_loss", "nnclr_loss", "on_diag_feat", "off_diag_feat"]
-        self.losses_weights = cfg.method_kwargs.get("losses_weights", {"att_nnclr_loss": 0.5, "nnclr_loss": 0.5, "on_diag_feat": 2.5, "off_diag_feat": 2.5})
+        self.join_feature_loss = cfg.method_kwargs.get("join_feature_loss", False)
+        if self.join_feature_loss:
+            self.losses_names = ["att_nnclr_loss", "nnclr_loss", "feature_loss"]
+            self.losses_weights = cfg.method_kwargs.get("losses_weights", {"att_nnclr_loss": 0.5, "nnclr_loss": 0.5, "feature_loss": 5.0})
+        else:
+            self.losses_names = ["att_nnclr_loss", "nnclr_loss", "on_diag_feat", "off_diag_feat"]
+            self.losses_weights = cfg.method_kwargs.get("losses_weights", {"att_nnclr_loss": 0.5, "nnclr_loss": 0.5, "on_diag_feat": 2.5, "off_diag_feat": 2.5})
         assert set(self.losses_names) == set(self.losses_weights)
 
         proj_hidden_dim: int = cfg.method_kwargs.proj_hidden_dim
@@ -425,7 +430,7 @@ class All4One(BaseMomentumMethod):
 
         self.dequeue_and_enqueue(momentum_z1, embs["targets"], embs["img_indexes"])
 
-        return {
+        losses = {
             "class_loss": self._class_loss(feats1, feats2, embs["targets"]),
             "att_nnclr_loss": self._att_nnclr_loss(rich_emb1, rich_emb2, strange_emb1, strange_emb2),
             "nnclr_loss": self._nnclr_loss(nn1, nn2, p1, p2),
@@ -435,6 +440,9 @@ class All4One(BaseMomentumMethod):
             "z2": z2,
             "idx1": idx1,
         }
+        if self.join_feature_loss:
+            losses["feature_loss"] = losses["on_diag_feat"] + losses["off_diag_feat"]
+        return losses
 
     def training_step(self, batch: Sequence[Any], batch_idx: int) -> torch.Tensor:
         """Training step for All4One reusing BaseMomentumMethod training step.

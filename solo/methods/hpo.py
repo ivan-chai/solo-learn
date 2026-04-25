@@ -71,12 +71,7 @@ class HPOAll4One(All4One):
         self.hp_group_params = hpo_kwargs.pop("hp_group_params", None)
         self.cache_embedding_gradients = hpo_kwargs.pop("cache_embedding_gradients", False)
         self.gradient_clip_val = hpo_kwargs.pop("gradient_clip_val", None)
-        self.join_feature_loss = hpo_kwargs.pop("join_feature_loss", False)
-
-        if self.join_feature_loss:
-            self.hpo_losses = ["att_nnclr_loss", "nnclr_loss", "feature_loss"]
-        else:
-            self.hpo_losses = self.losses_names
+        self.hpo_losses = self.losses_names
 
         initial_weights = hpo_kwargs.pop("initial_weights", None)
         if initial_weights is not None:
@@ -140,8 +135,6 @@ class HPOAll4One(All4One):
 
         decompressed_embeddings = self.decompress_embeddings(embeddings, meta)
         losses = self.compute_losses(decompressed_embeddings)
-        if self.join_feature_loss:
-            losses["feature_loss"] = losses["on_diag_feat"] + losses["off_diag_feat"]
         metrics = {}
         if opt.train_downstream_head != "train":
             losses[self.downstream_loss] = self._class_loss(
