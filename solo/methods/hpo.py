@@ -67,6 +67,8 @@ class HPOAll4One(All4One):
         self.automatic_optimization = False
 
         hpo_kwargs = dict(cfg.hpo_kwargs)
+        self.weights_optimizer = hpo_kwargs.pop("weights_optimizer", None)
+        self.weights_optimizer_params = hpo_kwargs.pop("weights_optimizer_params", None)
         self.hpo_params = hpo_kwargs.pop("hpo_params", None)
         self.hp_group_params = hpo_kwargs.pop("hp_group_params", None)
         self.cache_embedding_gradients = hpo_kwargs.pop("cache_embedding_gradients", False)
@@ -254,8 +256,10 @@ class HPOAll4One(All4One):
         def make_optimizer(learnable_params, **kwargs):
             heads_groups = [i for i in range(len(learnable_params)) if learnable_params[i].get("is_head", False)]
             return AlignedHPOptimizer(learnable_params, self._OPTIMIZERS[self.base_optimizer],
+                                      weights_optimizer_cls=self._OPTIMIZERS[self.weights_optimizer] if self.weights_optimizer is not None else None,
                                       weights_names=self.hpo_losses,
                                       base_optimizer_params=kwargs,
+                                      weights_optimizer_params=self.weights_optimizer_params,
                                       heads_groups=heads_groups,
                                       **(self.hpo_params or {}))
         self._OPTIMIZERS["hpo"] = make_optimizer
