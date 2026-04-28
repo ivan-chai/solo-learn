@@ -38,6 +38,12 @@ except ImportError:
 else:
     _h5_available = True
 
+try:
+    from solo.data.hf_dataset import HFImageNetDataset, load_hf_imagenet as _load_hf_imagenet
+    _hf_available = True
+except ImportError:
+    _hf_available = False
+
 
 def dataset_with_index(DatasetClass: Type[Dataset]) -> Type[Dataset]:
     """Factory for datasets that also returns the data index.
@@ -349,7 +355,19 @@ def prepare_datasets(
             assert _h5_available
             train_dataset = dataset_with_index(H5Dataset)(dataset, data_path, transform)
         else:
-            train_dataset = dataset_with_index(ImageFolder)(data_path, transform)
+            hf_split = "train" if split == "train" else "validation"
+            _imagenet_loaded = False
+            if data_path is not None:
+                try:
+                    train_dataset = dataset_with_index(ImageFolder)(data_path, transform)
+                    _imagenet_loaded = True
+                except Exception:
+                    pass
+            if not _imagenet_loaded and _hf_available:
+                hf_ds = _load_hf_imagenet(data_path, hf_split)
+                train_dataset = dataset_with_index(HFImageNetDataset)(hf_ds, transform)
+            elif not _imagenet_loaded:
+                train_dataset = dataset_with_index(ImageFolder)(data_path, transform)
 
     elif dataset == "custom":
         data_path = train_data_path if split == "train" else val_data_path

@@ -36,6 +36,12 @@ except ImportError:
 else:
     _h5_available = True
 
+try:
+    from solo.data.hf_dataset import HFImageNetDataset, load_hf_imagenet as _load_hf_imagenet
+    _hf_available = True
+except ImportError:
+    _hf_available = False
+
 
 def build_custom_pipeline():
     """Builds augmentation pipelines for custom data.
@@ -222,9 +228,24 @@ def prepare_datasets(
             assert _h5_available
             train_dataset = H5Dataset(dataset, train_data_path, T_train)
             val_dataset = H5Dataset(dataset, val_data_path, T_val)
-        else:
+        elif dataset == "custom":
             train_dataset = ImageFolder(train_data_path, T_train)
             val_dataset = ImageFolder(val_data_path, T_val)
+        else:
+            _train_loaded = False
+            if train_data_path is not None:
+                try:
+                    train_dataset = ImageFolder(train_data_path, T_train)
+                    val_dataset = ImageFolder(val_data_path, T_val)
+                    _train_loaded = True
+                except Exception:
+                    pass
+            if not _train_loaded and _hf_available:
+                train_dataset = HFImageNetDataset(_load_hf_imagenet(train_data_path, "train"), T_train)
+                val_dataset = HFImageNetDataset(_load_hf_imagenet(val_data_path, "validation"), T_val)
+            elif not _train_loaded:
+                train_dataset = ImageFolder(train_data_path, T_train)
+                val_dataset = ImageFolder(val_data_path, T_val)
 
     if data_fraction > 0:
         assert data_fraction < 1, "Only use data_fraction for values smaller than 1."
