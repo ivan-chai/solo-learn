@@ -39,33 +39,57 @@ class HFImageNetDataset(Dataset):
 def load_hf_imagenet(data_path, hf_split: str, dataset: str = "imagenet"):
     """Load an ImageNet HuggingFace dataset.
 
-    Tries (1) local path via load_dataset, then (2) HF Hub / cache.
+    Tries (1) load_from_disk on local path, (2) load_dataset on local path
+    (imagefolder), then (3) HF Hub / cache.
     For imagenet100, filters to the 100-class subset and remaps labels to 0-99.
 
     Returns:
         (hf_dataset, label_map)  — label_map is None for full imagenet.
     """
-    def _load(path_or_name):
-        return hf_datasets.load_dataset(str(path_or_name), split=hf_split, trust_remote_code=True)
+    def _load_hub(split):
+        return hf_datasets.load_dataset("imagenet-1k", split=split, trust_remote_code=True)
 
     hf_ds = None
     if data_path is not None:
+        # Arrow dataset saved with save_to_disk.
         try:
-            hf_ds = _load(data_path)
+            ds = hf_datasets.load_from_disk(str(data_path))
+            hf_ds = ds[hf_split] if isinstance(ds, hf_datasets.DatasetDict) else ds
         except Exception:
             pass
+        # Imagefolder-style directory.
+        if hf_ds is None:
+            try:
+                hf_ds = hf_datasets.load_dataset(
+                    str(data_path), split=hf_split, trust_remote_code=True
+                )
+            except Exception:
+                pass
     if hf_ds is None:
-        hf_ds = _load("imagenet-1k")
+        hf_ds = _load_hub(hf_split)
 
     if dataset != "imagenet100":
         return hf_ds, None
 
     import numpy as np
 
+    # Ensure the label feature has named synset IDs (nXXXXXXXX format).
+    # If not, fall back to Hub which always has the canonical synset names.
+    label_feature = hf_ds.features.get("label")
+    names = getattr(label_feature, "names", None)
+    if not names or not names[0].startswith("n"):
+        hf_ds = _load_hub(hf_split)
+        names = hf_ds.features["label"].names
+
     synsets = _imagenet100_synsets()  # sorted → indices 0..99 match ImageFolder
-    hf_label_names = hf_ds.features["label"].names  # list of 1000 synsets in HF order
-    synset_to_hf = {name: i for i, name in enumerate(hf_label_names)}
+    synset_to_hf = {name: i for i, name in enumerate(names)}
     label_map = {synset_to_hf[s]: new_i for new_i, s in enumerate(synsets) if s in synset_to_hf}
+
+    if not label_map:
+        raise RuntimeError(
+            f"No imagenet100 synsets found in HF label names. "
+            f"First few label names: {names[:5]}"
+        )
 
     # Read only the integer label column (no image decoding) then select by index.
     labels = np.array(hf_ds["label"])
