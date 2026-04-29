@@ -364,8 +364,8 @@ def prepare_datasets(
                 except Exception:
                     pass
             if not _imagenet_loaded and _hf_available:
-                hf_ds = _load_hf_imagenet(data_path, hf_split)
-                train_dataset = dataset_with_index(HFImageNetDataset)(hf_ds, transform)
+                hf_ds, label_map = _load_hf_imagenet(data_path, hf_split, dataset=dataset)
+                train_dataset = dataset_with_index(HFImageNetDataset)(hf_ds, transform, label_map=label_map)
             elif not _imagenet_loaded:
                 train_dataset = dataset_with_index(ImageFolder)(data_path, transform)
 

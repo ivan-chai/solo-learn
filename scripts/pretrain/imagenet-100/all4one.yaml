@@ -28,7 +28,7 @@ data:
   dataset: imagenet100
   train_path: "./datasets/imagenet-100/train"
   val_path: "./datasets/imagenet-100/val"
-  format: "dali"
+  format: "image_folder"
   num_workers: 4
 optimizer:
   name: "lars"

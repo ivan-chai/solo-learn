@@ -241,8 +241,10 @@ def prepare_datasets(
                 except Exception:
                     pass
             if not _train_loaded and _hf_available:
-                train_dataset = HFImageNetDataset(_load_hf_imagenet(train_data_path, "train"), T_train)
-                val_dataset = HFImageNetDataset(_load_hf_imagenet(val_data_path, "validation"), T_val)
+                hf_train, label_map = _load_hf_imagenet(train_data_path, "train", dataset=dataset)
+                hf_val, _ = _load_hf_imagenet(val_data_path, "validation", dataset=dataset)
+                train_dataset = HFImageNetDataset(hf_train, T_train, label_map=label_map)
+                val_dataset = HFImageNetDataset(hf_val, T_val, label_map=label_map)
             elif not _train_loaded:
                 train_dataset = ImageFolder(train_data_path, T_train)
                 val_dataset = ImageFolder(val_data_path, T_val)
