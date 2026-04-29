@@ -51,12 +51,25 @@ def load_hf_imagenet(data_path, hf_split: str, dataset: str = "imagenet"):
 
     hf_ds = None
     if data_path is not None:
+        data_path = Path(data_path)
         # Arrow dataset saved with save_to_disk.
         try:
             ds = hf_datasets.load_from_disk(str(data_path))
             hf_ds = ds[hf_split] if isinstance(ds, hf_datasets.DatasetDict) else ds
         except Exception:
             pass
+        # Parquet files in a data/ subfolder (HF website download format).
+        if hf_ds is None:
+            parquet_files = sorted((data_path / "data").glob("*.parquet"))
+            if parquet_files:
+                try:
+                    hf_ds = hf_datasets.load_dataset(
+                        "parquet",
+                        data_files=[str(f) for f in parquet_files],
+                        split="train",
+                    )
+                except Exception:
+                    pass
         # Imagefolder-style directory.
         if hf_ds is None:
             try:
