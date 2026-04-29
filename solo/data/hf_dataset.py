@@ -60,9 +60,15 @@ def load_hf_imagenet(data_path, hf_split: str, dataset: str = "imagenet"):
     if dataset != "imagenet100":
         return hf_ds, None
 
+    import numpy as np
+
     synsets = _imagenet100_synsets()  # sorted → indices 0..99 match ImageFolder
     hf_label_names = hf_ds.features["label"].names  # list of 1000 synsets in HF order
     synset_to_hf = {name: i for i, name in enumerate(hf_label_names)}
     label_map = {synset_to_hf[s]: new_i for new_i, s in enumerate(synsets) if s in synset_to_hf}
-    hf_ds = hf_ds.filter(lambda x: x["label"] in label_map)
+
+    # Read only the integer label column (no image decoding) then select by index.
+    labels = np.array(hf_ds["label"])
+    indices = np.where(np.isin(labels, list(label_map.keys())))[0].tolist()
+    hf_ds = hf_ds.select(indices)
     return hf_ds, label_map
