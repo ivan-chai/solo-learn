@@ -1,0 +1,18 @@
+defaults:
+  - all4one
+  - _self_
+
+name: "HPO-All4One-imagenet-100"
+method: "hpo-all4one"
+hpo_kwargs:
+  hp_group_params:
+    lr: 0.1
+  hpo_params:
+    algorithm: sgd
+    encoder_decoder: true
+    regularization: 1
+    ema:
+      covs: 0.0
+      stats: 0.99
+    scale_gradients: 1
+precision: 32-true
