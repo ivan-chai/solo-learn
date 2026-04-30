@@ -11,6 +11,25 @@ def _imagenet100_synsets():
     return sorted((_SUBSET_DIR / "imagenet100_classes.txt").read_text().split())
 
 
+def _synset_to_idx_from_classes_file(data_path: Path):
+    """Load {synset_id: label_int} from a classes.py file next to the parquet data.
+
+    The file must define IMAGENET2012_CLASSES as an OrderedDict whose key order
+    matches the parquet label integers (standard HF imagenet download format).
+    """
+    classes_file = data_path / "classes.py"
+    if not classes_file.exists():
+        raise FileNotFoundError(
+            f"classes.py not found at {classes_file}. "
+            f"This file is included in the HF imagenet dataset download."
+        )
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_imagenet_classes", classes_file)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return {s: i for i, s in enumerate(mod.IMAGENET2012_CLASSES.keys())}
+
+
 class HFImageNetDataset(Dataset):
     """Wraps a HuggingFace ImageNet dataset split with a torchvision transform.
 
@@ -86,22 +105,24 @@ def load_hf_imagenet(data_path, hf_split: str, dataset: str = "imagenet"):
 
     import numpy as np
 
-    # Ensure the label feature has named synset IDs (nXXXXXXXX format).
-    # If not, fall back to Hub which always has the canonical synset names.
+    synsets = _imagenet100_synsets()  # sorted alphabetically → new labels 0..99
+
+    # Try to build synset→hf_index from the dataset's own label names (fast path:
+    # labels are synset IDs like n01440764).  Fall back to classes.py in data_path
+    # when labels are human-readable strings.
     label_feature = hf_ds.features.get("label")
     names = getattr(label_feature, "names", None)
-    if not names or not names[0].startswith("n"):
-        hf_ds = _load_hub(hf_split)
-        names = hf_ds.features["label"].names
+    if names and names[0].startswith("n"):
+        synset_to_hf = {name: i for i, name in enumerate(names)}
+    else:
+        synset_to_hf = _synset_to_idx_from_classes_file(data_path)
 
-    synsets = _imagenet100_synsets()  # sorted → indices 0..99 match ImageFolder
-    synset_to_hf = {name: i for i, name in enumerate(names)}
     label_map = {synset_to_hf[s]: new_i for new_i, s in enumerate(synsets) if s in synset_to_hf}
 
     if not label_map:
         raise RuntimeError(
-            f"No imagenet100 synsets found in HF label names. "
-            f"First few label names: {names[:5]}"
+            f"No imagenet100 synsets found in the label mapping. "
+            f"First few feature label names: {names[:5] if names else 'N/A'}"
         )
 
     # Read only the integer label column (no image decoding) then select by index.
