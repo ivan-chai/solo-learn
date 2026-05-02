@@ -8,7 +8,7 @@ import omegaconf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from aligned_hpo import AlignedHPOptimizer, HPO_STAGE_DOWNSTREAM
+from aligned_hpo import AlignedHPOptimizer, DWAOptimizer, GradNormOptimizer, MGDAOptimizer, HPO_STAGE_DOWNSTREAM
 from solo.methods.all4one import All4One
 
 
@@ -59,6 +59,13 @@ def log_dict(pl_logger, data, epoch, prefix):
 
 
 class HPOAll4One(All4One):
+    OPTIMIZERS = {
+        "aligned-hpo": AlignedHPOptimizer,
+        "dwa": DWAOptimizer,
+        "gradnorm": GradNormOptimizer,
+        "mgda": MGDAOptimizer
+    }
+
     def __init__(self, cfg: omegaconf.DictConfig):
         super().__init__(cfg)
 
@@ -68,9 +75,12 @@ class HPOAll4One(All4One):
         self.automatic_optimization = False
 
         hpo_kwargs = dict(cfg.hpo_kwargs)
-        self.weights_optimizer = hpo_kwargs.pop("weights_optimizer", None)
-        self.weights_optimizer_params = hpo_kwargs.pop("weights_optimizer_params", None)
-        self.hpo_params = hpo_kwargs.pop("hpo_params", None)
+        self.optimizer_type = hpo_kwargs.pop("optimizer", "aligned-hpo")
+        self.hpo_params = dict(hpo_kwargs.pop("hpo_params", {}))
+        weights_optimizer = hpo_kwargs.pop("weights_optimizer", None)
+        if weights_optimizer is not None:
+            self.hpo_params["weights_optimizer_cls"] = self._OPTIMIZERS[weights_optimizer]
+            self.hpo_params["weights_optimizer_params"] = hpo_kwargs.pop("weights_optimizer_params", None)
         self.hp_group_params = hpo_kwargs.pop("hp_group_params", None)
         self.cache_embedding_gradients = hpo_kwargs.pop("cache_embedding_gradients", False)
         self.gradient_clip_val = hpo_kwargs.pop("gradient_clip_val", None)
@@ -139,7 +149,7 @@ class HPOAll4One(All4One):
         decompressed_embeddings = self.decompress_embeddings(embeddings, meta)
         losses = self.compute_losses(decompressed_embeddings)
         metrics = {}
-        if opt.train_downstream_head != "train":
+        if isinstance(opt, AlignedHPOptimizer) and (opt.train_downstream_head != "train"):
             losses[self.downstream_loss] = self._class_loss(
                 decompressed_embeddings["feats1"], decompressed_embeddings["feats2"], decompressed_embeddings["targets"], use_val_head=True,
             )
@@ -161,6 +171,8 @@ class HPOAll4One(All4One):
                 metrics["hpo_grad_norm_downstream"] = self._get_grad_norm(warn_empty_grads=False)
             elif isinstance(stage, int):
                 metrics[f"hpo_grad_norm_weight_{self.hpo_losses[stage]}"] = self._get_grad_norm(warn_empty_grads=False)
+
+            return_values = []
             if opt.encoder_decoder:
                 with torch.no_grad():
                     emb_grad_norm = torch.linalg.norm(embeddings.grad.flatten())
@@ -168,7 +180,10 @@ class HPOAll4One(All4One):
                     metrics["hpo_emb_grad_norm_downstream"] = emb_grad_norm
                 elif isinstance(stage, int):
                     metrics[f"hpo_emb_grad_norm_weight_{self.hpo_losses[stage]}"] = emb_grad_norm
-                return embeddings
+                return_values.append(embeddings)
+            if opt.need_losses:
+                return_values.append(torch.stack([losses[name] for name in self.hpo_losses]))
+            return return_values if len(return_values) > 1 else return_values[0]
 
         if opt.encoder_decoder:
             def closure_encoder(z_grad):
@@ -256,13 +271,13 @@ class HPOAll4One(All4One):
         self.optimizer = "hpo"
         def make_optimizer(learnable_params, **kwargs):
             heads_groups = [i for i in range(len(learnable_params)) if learnable_params[i].get("is_head", False)]
-            return AlignedHPOptimizer(learnable_params, self._OPTIMIZERS[self.base_optimizer],
-                                      weights_optimizer_cls=self._OPTIMIZERS[self.weights_optimizer] if self.weights_optimizer is not None else None,
-                                      weights_names=self.hpo_losses,
-                                      base_optimizer_params=kwargs,
-                                      weights_optimizer_params=self.weights_optimizer_params,
-                                      heads_groups=heads_groups,
-                                      **(self.hpo_params or {}))
+            return self.OPTIMIZERS[self.optimizer_type](
+                learnable_params, self._OPTIMIZERS[self.base_optimizer],
+                weights_names=self.hpo_losses,
+                base_optimizer_params=kwargs,
+                heads_groups=heads_groups,
+                **(self.hpo_params or {})
+            )
         self._OPTIMIZERS["hpo"] = make_optimizer
         result = super().configure_optimizers()
         return result
