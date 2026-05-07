@@ -4,13 +4,17 @@ defaults:
 
 name: "HPO-All4One-cifar10"
 method: "hpo-all4one"
+method_kwargs:
+  join_feature_loss: true
 hpo_kwargs:
+  weights_optimizer: adam
   hp_group_params:
     lr: 0.1
   hpo_params:
     algorithm: sgd
     encoder_decoder: true
-    regularization: 1
+    regularization: 0
+    rescale_grad_norm_weights: [0.5, 0.5, 5.0]
     ema:
       covs: 0.0
       stats: 0.99
