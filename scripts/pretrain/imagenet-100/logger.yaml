@@ -1,5 +1,5 @@
 logger:
   _target_: venik.MLFlowLogger
-  project: solo-cifar
+  project: solo-imagenet100
   name: ${name}
   save_dir: lightning_logs
