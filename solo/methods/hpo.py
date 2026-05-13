@@ -8,7 +8,7 @@ import omegaconf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from aligned_hpo import AlignedHPOptimizer, DWAOptimizer, GradNormOptimizer, MGDAOptimizer, HPO_STAGE_DOWNSTREAM
+from aligned_hpo import AlignedHPOptimizer, DWAOptimizer, GradNormOptimizer, MGDAOptimizer, PCGradOptimizer, HPO_STAGE_DOWNSTREAM
 from solo.methods.all4one import All4One
 
 
@@ -63,7 +63,8 @@ class HPOAll4One(All4One):
         "aligned-hpo": AlignedHPOptimizer,
         "dwa": DWAOptimizer,
         "gradnorm": GradNormOptimizer,
-        "mgda": MGDAOptimizer
+        "mgda": MGDAOptimizer,
+        "pcgrad": PCGradOptimizer
     }
 
     def __init__(self, cfg: omegaconf.DictConfig):
