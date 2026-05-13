@@ -184,7 +184,11 @@ class HPOAll4One(All4One):
                 return_values.append(embeddings)
             if opt.need_losses:
                 return_values.append(torch.stack([losses[name] for name in self.hpo_losses]))
-            return return_values if len(return_values) > 1 else return_values[0]
+            if not return_values:
+                return_values = None
+            elif len(return_values) == 1:
+                return_values = return_values[0]
+            return return_values
 
         if opt.encoder_decoder:
             def closure_encoder(z_grad):
