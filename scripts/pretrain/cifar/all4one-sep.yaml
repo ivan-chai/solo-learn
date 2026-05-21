@@ -1,0 +1,8 @@
+defaults:
+  - all4one
+  - _self_
+
+name: "All4One-Sep-cifar10"
+
+method_kwargs:
+  separate_projectors: true

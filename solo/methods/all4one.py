@@ -18,6 +18,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import pickle
+from contextlib import contextmanager
 from typing import Any, Dict, List, Sequence, Tuple
 
 import omegaconf
@@ -31,11 +32,18 @@ from solo.utils.momentum import initialize_momentum_params
 from solo.utils.positional_encodings import PositionalEncodingPermute1D, Summer
 
 
+class NoDefaultSuffixException(Exception):
+    pass
+
+
 class All4One(BaseMomentumMethod):
     queue: torch.Tensor
 
     def __init__(self, cfg: omegaconf.DictConfig):
         super().__init__(cfg)
+        assert not (set(cfg.method_kwargs.keys()) - {"temperature", "queue_size",
+                                                     "join_feature_loss", "losses_weights", "separate_projectors",
+                                                     "proj_hidden_dim", "proj_output_dim", "pred_hidden_dim"})
 
         self.temperature: float = cfg.method_kwargs.temperature
         self.queue_size: int = cfg.method_kwargs.queue_size
@@ -52,30 +60,37 @@ class All4One(BaseMomentumMethod):
         proj_output_dim: int = cfg.method_kwargs.proj_output_dim
         pred_hidden_dim: int = cfg.method_kwargs.pred_hidden_dim
 
-        # projector
-        self.projector = nn.Sequential(
-            nn.Linear(self.features_dim, proj_hidden_dim),
-            nn.BatchNorm1d(proj_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(proj_hidden_dim, proj_hidden_dim),
-            nn.BatchNorm1d(proj_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(proj_hidden_dim, proj_output_dim),
-            nn.BatchNorm1d(proj_output_dim),
-        )
+        self.separate_projectors = cfg.method_kwargs.get("separate_projectors", False)
+        self.projector_suffixes = [""] if not self.separate_projectors else ["", "_nnclr"]
 
-        # momentum projector
-        self.momentum_projector = nn.Sequential(
-            nn.Linear(self.features_dim, proj_hidden_dim),
-            nn.BatchNorm1d(proj_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(proj_hidden_dim, proj_hidden_dim),
-            nn.BatchNorm1d(proj_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(proj_hidden_dim, proj_output_dim),
-            nn.BatchNorm1d(proj_output_dim),
-        )
-        initialize_momentum_params(self.projector, self.momentum_projector)
+        for suffix in self.projector_suffixes:
+            # projector
+            projector = nn.Sequential(
+                nn.Linear(self.features_dim, proj_hidden_dim),
+                nn.BatchNorm1d(proj_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(proj_hidden_dim, proj_hidden_dim),
+                nn.BatchNorm1d(proj_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(proj_hidden_dim, proj_output_dim),
+                nn.BatchNorm1d(proj_output_dim),
+            )
+
+            # momentum projector
+            momentum_projector = nn.Sequential(
+                nn.Linear(self.features_dim, proj_hidden_dim),
+                nn.BatchNorm1d(proj_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(proj_hidden_dim, proj_hidden_dim),
+                nn.BatchNorm1d(proj_hidden_dim),
+                nn.ReLU(),
+                nn.Linear(proj_hidden_dim, proj_output_dim),
+                nn.BatchNorm1d(proj_output_dim),
+            )
+            initialize_momentum_params(projector, momentum_projector)
+            setattr(self, "_projector" + suffix, projector)
+            setattr(self, "_momentum_projector" + suffix, momentum_projector)
+        self._default_suffix = None
 
         # predictor
         self.predictor = nn.Sequential(
@@ -115,6 +130,34 @@ class All4One(BaseMomentumMethod):
         # NN index queue
         self.register_buffer("queue_index", -torch.ones(self.queue_size, dtype=torch.long))
 
+    @property
+    def projector(self):
+        if self.separate_projectors:
+            suffix = self._default_suffix
+        else:
+            suffix = ""
+        if suffix is None:
+            raise NoDefaultSuffixException("Suffix was not specified in separate mode")
+        return getattr(self, "_projector" + suffix)
+
+    @property
+    def momentum_projector(self):
+        if not self.separate_projectors:
+            suffix = ""
+        else:
+            suffix = self._default_suffix
+        if suffix is None:
+            raise NoDefaultSuffixException("Suffix was not specified in separate mode")
+        return getattr(self, "_momentum_projector" + suffix)
+
+    @contextmanager
+    def default_suffix(self, suffix):
+        self._default_suffix = suffix
+        try:
+            yield self
+        finally:
+            self._default_suffix = None
+
     @staticmethod
     def add_and_assert_specific_cfg(cfg: omegaconf.DictConfig) -> omegaconf.DictConfig:
         """Adds method specific default values/checks for config.
@@ -139,12 +182,12 @@ class All4One(BaseMomentumMethod):
 
     @property
     def extra_learnable_params(self) -> List[dict]:
-        extra_learnable_params = [
-            {"params": self.projector.parameters()},
+        extra_learnable_params = [{"params": getattr(self, "_projector" + suffix).parameters()} for suffix in self.projector_suffixes]
+        extra_learnable_params.extend([
             {"params": self.predictor.parameters()},
             {"params": self.predictor2.parameters()},
             {"params": self.transformer_encoder.parameters(), "lr": 0.1},
-        ]
+        ])
         return extra_learnable_params
 
     @property
@@ -164,7 +207,7 @@ class All4One(BaseMomentumMethod):
             List[Tuple[Any, Any]]: list of momentum pairs.
         """
 
-        extra_momentum_pairs = [(self.projector, self.momentum_projector)]
+        extra_momentum_pairs = [(getattr(self, "_projector" + suffix), getattr(self, "_momentum_projector" + suffix)) for suffix in self.projector_suffixes]
         return super().momentum_pairs + extra_momentum_pairs
 
     @torch.no_grad()
@@ -241,10 +284,13 @@ class All4One(BaseMomentumMethod):
                 predicted features.
         """
 
-        out = super().forward(X, *args, **kwargs)
-        z = self.projector(out["feats"])
-        p = self.predictor(z)
-        return {**out, "z": z, "p": p}
+        out = dict(super().forward(X, *args, **kwargs))
+        try:
+            out["z"] = self.projector(out["feats"])
+            out["p"] = self.predictor(out["z"])
+        except NoDefaultSuffixException:
+            pass
+        return out
 
     def off_diagonal(self, x):
         """Extracts off-diagonal elements.
@@ -416,24 +462,34 @@ class All4One(BaseMomentumMethod):
         """
         feats1, feats2 = embs["feats1"], embs["feats2"]
 
-        momentum_z1, momentum_z2 = self._momentum_projections(
-            embs["momentum_feats1"], embs["momentum_feats2"]
-        )
-        z1, z2 = self._online_projections(feats1, feats2)
-        p1, p2, p1_2, p2_2 = self._predictions(z1, z2)
-        idx1, nn1, nn2 = self._nearest_neighbors(momentum_z1, momentum_z2)
-        rich_emb1, rich_emb2, strange_emb1, strange_emb2 = self._transformer_encodings(
-            nn1, nn2, p1_2, p2_2
-        )
+        with self.default_suffix(""):
+            momentum_z1, momentum_z2 = self._momentum_projections(
+                embs["momentum_feats1"], embs["momentum_feats2"]
+            )
+            z1, z2 = self._online_projections(feats1, feats2)
+            on_diag_feat, off_diag_feat = self._feature_loss(z1, z2, momentum_z1, momentum_z2)
 
-        on_diag_feat, off_diag_feat = self._feature_loss(z1, z2, momentum_z1, momentum_z2)
+        with self.default_suffix("_nnclr"):
+            if self.separate_projectors:
+                # Recompute with different projector.
+                momentum_z1, momentum_z2 = self._momentum_projections(
+                    embs["momentum_feats1"], embs["momentum_feats2"]
+                )
+                z1, z2 = self._online_projections(feats1, feats2)
+            p1, p2, p1_2, p2_2 = self._predictions(z1, z2)
+            idx1, nn1, nn2 = self._nearest_neighbors(momentum_z1, momentum_z2)
+            rich_emb1, rich_emb2, strange_emb1, strange_emb2 = self._transformer_encodings(
+                nn1, nn2, p1_2, p2_2
+            )
+            att_nnclr_loss = self._att_nnclr_loss(rich_emb1, rich_emb2, strange_emb1, strange_emb2)
+            nnclr_loss = self._nnclr_loss(nn1, nn2, p1, p2)
 
         self.dequeue_and_enqueue(momentum_z1, embs["targets"], embs["img_indexes"])
 
         losses = {
             "class_loss": self._class_loss(feats1, feats2, embs["targets"]),
-            "att_nnclr_loss": self._att_nnclr_loss(rich_emb1, rich_emb2, strange_emb1, strange_emb2),
-            "nnclr_loss": self._nnclr_loss(nn1, nn2, p1, p2),
+            "att_nnclr_loss": att_nnclr_loss,
+            "nnclr_loss": nnclr_loss,
             "on_diag_feat": on_diag_feat,
             "off_diag_feat": off_diag_feat,
             "z1": z1,
