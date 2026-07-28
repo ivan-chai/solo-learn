@@ -1,0 +1,9 @@
+defaults:
+  - hpo-all4one
+  - _self_
+
+name: "HPO-All4One-Shared-imagenet-100"
+
+hpo_kwargs:
+  hpo_params:
+    shared_algorithm: aligned-mtl

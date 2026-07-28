@@ -257,7 +257,7 @@ class HPOAll4One(All4One):
         Returns:
             List[dict]: list of learnable parameters.
         """
-        weights_params = [dict(params=[self.loss_weights], **(self.hp_group_params or {}))]
+        weights_params = [dict(name="weights", params=[self.loss_weights], **(self.hp_group_params or {}))]
         extra_learnable_params = self.extra_learnable_params
         base_learnable_params = super(All4One, self).learnable_params
         backbone_params = [group for group in base_learnable_params if group["name"] == "backbone"]
@@ -270,17 +270,20 @@ class HPOAll4One(All4One):
             heads_params.append({"params": self.val_classifier.parameters(), "lr": self.classifier_lr, "weight_decay": 0})
         for group in heads_params:
             group["is_head"] = True
+            group["is_shared"] = group["name"].startswith("projector")
         return weights_params + heads_params + backbone_params
 
     def configure_optimizers(self):
         self.optimizer = "hpo"
         def make_optimizer(learnable_params, **kwargs):
-            heads_groups = [i for i in range(len(learnable_params)) if learnable_params[i].get("is_head", False)]
+            heads_groups = [i for i in range(len(learnable_params)) if learnable_params[i].get("is_head", False) and not learnable_params[i]["is_shared"]]
+            shared_groups = [i for i in range(len(learnable_params)) if learnable_params[i].get("is_shared", False)]
             return self.OPTIMIZERS[self.optimizer_type](
                 learnable_params, self._OPTIMIZERS[self.base_optimizer],
                 weights_names=self.hpo_losses,
                 base_optimizer_params=kwargs,
                 heads_groups=heads_groups,
+                shared_groups=shared_groups,
                 **(self.hpo_params or {})
             )
         self._OPTIMIZERS["hpo"] = make_optimizer

@@ -2,7 +2,7 @@ defaults:
   - hpo-all4one
   - _self_
 
-name: "HPO-All4One-Sep-cifar10"
+name: "HPO-All4One-Sep-imagenet-100"
 
 method_kwargs:
   separate_projectors: true

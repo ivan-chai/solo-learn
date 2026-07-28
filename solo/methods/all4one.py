@@ -182,11 +182,11 @@ class All4One(BaseMomentumMethod):
 
     @property
     def extra_learnable_params(self) -> List[dict]:
-        extra_learnable_params = [{"params": getattr(self, "_projector" + suffix).parameters()} for suffix in self.projector_suffixes]
+        extra_learnable_params = [{"name": "projector" + suffix, "params": getattr(self, "_projector" + suffix).parameters()} for suffix in self.projector_suffixes]
         extra_learnable_params.extend([
-            {"params": self.predictor.parameters()},
-            {"params": self.predictor2.parameters()},
-            {"params": self.transformer_encoder.parameters(), "lr": 0.1},
+            {"name": "predictor", "params": self.predictor.parameters()},
+            {"name": "predictor2", "params": self.predictor2.parameters()},
+            {"name": "transformer_encoder", "params": self.transformer_encoder.parameters(), "lr": 0.1},
         ])
         return extra_learnable_params
 
