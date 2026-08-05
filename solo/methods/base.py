@@ -189,13 +189,15 @@ class BaseMethod(pl.LightningModule):
         self.backbone_name: str = cfg.backbone.name
         # initialize backbone
         kwargs = self.backbone_args.copy()
+        use_encoder_batchnorm = kwargs.pop("use_encoder_batchnorm", False)
+        encoder_batchnorm_affine = kwargs.pop("encoder_batchnorm_affine", True)
 
         method: str = cfg.method
         self.backbone: nn.Module = self.base_model(method, **kwargs)
         if self.backbone_name.startswith("resnet"):
             self.features_dim: int = self.backbone.inplanes
             # remove fc layer
-            self.backbone.fc = nn.Identity()
+            self.backbone.fc = nn.BatchNorm1d(self.features_dim, affine=encoder_batchnorm_affine) if use_encoder_batchnorm else nn.Identity()
             cifar = cfg.data.dataset in ["cifar10", "cifar100"]
             if cifar:
                 self.backbone.conv1 = nn.Conv2d(
@@ -203,6 +205,8 @@ class BaseMethod(pl.LightningModule):
                 )
                 self.backbone.maxpool = nn.Identity()
         else:
+            if use_encoder_batchnorm:
+                raise NotImplementedError(f"Encoder batchnorm for {self.backbone_name}")
             self.features_dim: int = self.backbone.num_features
         ##############################
 
@@ -643,18 +647,23 @@ class BaseMomentumMethod(BaseMethod):
 
         # initialize momentum backbone
         kwargs = self.backbone_args.copy()
+        use_encoder_batchnorm = kwargs.pop("use_encoder_batchnorm", False)
+        encoder_batchnorm_affine = kwargs.pop("encoder_batchnorm_affine", True)
 
         method: str = cfg.method
         self.momentum_backbone: nn.Module = self.base_model(method, **kwargs)
         if self.backbone_name.startswith("resnet"):
             # remove fc layer
-            self.momentum_backbone.fc = nn.Identity()
+            self.momentum_backbone.fc = nn.BatchNorm1d(self.features_dim, affine=encoder_batchnorm_affine) if use_encoder_batchnorm else nn.Identity()
             cifar = cfg.data.dataset in ["cifar10", "cifar100"]
             if cifar:
                 self.momentum_backbone.conv1 = nn.Conv2d(
                     3, 64, kernel_size=3, stride=1, padding=2, bias=False
                 )
                 self.momentum_backbone.maxpool = nn.Identity()
+        else:
+            if use_encoder_batchnorm:
+                raise NotImplementedError(f"Encoder batchnorm for {self.backbone_name}")
 
         initialize_momentum_params(self.backbone, self.momentum_backbone)
 
