@@ -150,11 +150,6 @@ class HPOAll4One(All4One):
         decompressed_embeddings = self.decompress_embeddings(embeddings, meta)
         losses = self.compute_losses(decompressed_embeddings)
         metrics = {}
-        if isinstance(opt, AlignedHPOptimizer) and (opt.train_downstream_head != "train"):
-            losses[self.downstream_loss] = self._class_loss(
-                decompressed_embeddings["feats1"], decompressed_embeddings["feats2"], decompressed_embeddings["targets"], use_val_head=True,
-            )
-            metrics[self.downstream_loss] = losses[self.downstream_loss].detach()
 
         def closure(down, weights, retain_graph=False, stage=None):
             opt.zero_grad()
